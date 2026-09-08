@@ -16,7 +16,7 @@ steps:
         for ci_component in cvld cmsg; do
           case "$ci_component" in
             cvld) ci_component_commit=c416d9edd6f7f7259d84b88838b8e607b2166671 ;;
-            cmsg) ci_component_commit=7395344a12a54711e84581edecd2340908db1e87 ;;
+            cmsg) ci_component_commit=7c6740369cf17779c2b749547adfbca92b899f34 ;;
           esac
           ci_component_dir="/workspaces/component-sources/$ci_component"
           ci_component_archive="$ci_component_dir/$ci_component_commit.tar"

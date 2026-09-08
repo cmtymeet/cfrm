@@ -73,7 +73,7 @@ export function openLedger(path) {
       FOREIGN KEY(context,allocation) REFERENCES allocations(context,id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS spends (
       context TEXT NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
-      nullifier TEXT NOT NULL, PRIMARY KEY(context,nullifier));`);
+      nullifier TEXT NOT NULL, claim_hash TEXT, PRIMARY KEY(context,nullifier));`);
   function transaction(action) {
     db.exec('BEGIN IMMEDIATE');
     try { const result = action(); db.exec('COMMIT'); return result; }
@@ -113,13 +113,16 @@ export function openLedger(path) {
         return signature;
       });
     },
-    spend(info, nullifier, clock) {
+    spend(info, nullifier, clock, claimHash) {
       return transaction(() => {
         // Re-read trusted time after acquiring the write lock; another process
         // may have pruned expired replay state while verification was pending.
         if (!active(info, clock())) return false;
         register(info);
-        return Number(db.prepare('INSERT INTO spends(context,nullifier) VALUES (?,?) ON CONFLICT DO NOTHING').run(info.id, nullifier).changes) === 1;
+        const prior = db.prepare('SELECT claim_hash FROM spends WHERE context=? AND nullifier=?').get(info.id, nullifier);
+        if (prior) return claimHash !== undefined && prior.claim_hash === claimHash;
+        db.prepare('INSERT INTO spends(context,nullifier,claim_hash) VALUES (?,?,?)').run(info.id, nullifier, claimHash ?? null);
+        return true;
       });
     },
     prune(now) { integer(now); db.prepare('DELETE FROM contexts WHERE expires_at<=?').run(now); },
@@ -178,7 +181,7 @@ export async function preparePermit(publicContext) {
   };
 }
 
-export async function redeemPermit(publicContext, ledger, permit, clock) {
+async function validateAndSpend(publicContext, ledger, permit, clock, claimHash) {
   try {
     if (typeof clock !== 'function') return false;
     const now = clock();
@@ -192,13 +195,23 @@ export async function redeemPermit(publicContext, ledger, permit, clock) {
     if (!(await suite.verify(publicKey, signature, message))) return false;
     // High-entropy nonce, not a hash of enumerable member/recipient pairs.
     const nullifier = encode(hash(Buffer.concat([info.domain, message.subarray(64)])));
-    return ledger.spend(info, nullifier, clock);
+    return ledger.spend(info, nullifier, clock, claimHash);
   } catch { return false; }
 }
 
-export function prepareRedemption() {
-  throw new Error('Recipient retry specification precedes implementation');
+export async function redeemPermit(publicContext, ledger, permit, clock) {
+  return validateAndSpend(publicContext, ledger, permit, clock);
 }
-export async function redeemIntroduction() {
-  throw new Error('Recipient retry specification precedes implementation');
+export function prepareRedemption(permit) {
+  if (!ownKeys(permit, ['message', 'signature'])) throw new TypeError('Invalid permit');
+  decode(permit.message, 96); decode(permit.signature, 384);
+  return { permit: { message: permit.message, signature: permit.signature }, claim: encode(randomBytes(32)) };
+}
+export async function redeemIntroduction(publicContext, ledger, redemption, clock) {
+  try {
+    if (!ownKeys(redemption, ['permit', 'claim'])) return { accepted: false };
+    const claimHash = encode(hash(Buffer.concat([Buffer.from('cfrm.redemption.v1'), decode(redemption.claim, 32)])));
+    const accepted = await validateAndSpend(publicContext, ledger, redemption.permit, clock, claimHash);
+    return { accepted };
+  } catch { return { accepted: false }; }
 }

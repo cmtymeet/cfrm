@@ -6,6 +6,7 @@ This is **an experimental client handler**, not a supported package export or de
 
 - [Functional and exact byte contract](SPEC.md)
 - [Acceptance tests](profiles.test.js)
+- [Socket boundary and pending fail-first wire tests](WIRE.md)
 - [Synthetic real-cryptography fixtures](fixtures.js)
 - [Explicit Node cryptography adapter](crypto-runtime.js)
 - [Cross-runtime cmsg owner-signature consumer](cmsg-signatures.js)

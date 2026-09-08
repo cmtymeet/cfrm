@@ -36,7 +36,8 @@ function active(context, now) {
   return now >= context.notBefore && now < context.expiresAt;
 }
 async function verificationKey(context) {
-  return crypto.subtle.importKey('jwk', context.publicKey, { name: 'RSA-PSS', hash: 'SHA-384' }, false, ['verify']);
+  // Blind RSA needs the public modulus; exporting a public key reveals no secret.
+  return crypto.subtle.importKey('jwk', context.publicKey, { name: 'RSA-PSS', hash: 'SHA-384' }, true, ['verify']);
 }
 
 // A fresh key is generated for each scope/epoch, never separately per member.

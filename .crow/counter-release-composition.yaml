@@ -45,6 +45,7 @@ steps:
           ci_test_status=0
           cargo fmt --manifest-path "$ci_native_manifest" --package cmsg-first-contact-release-experiment -- --check || ci_test_status=1
           timeout 1200 npm test --prefix experiments/directional-receipts || ci_test_status=1
+          timeout 120 npm run test:bridge --prefix experiments/directional-receipts || ci_test_status=1
           timeout 1200 npm run test:composition --prefix experiments/directional-receipts || ci_test_status=1
           exit "$ci_test_status"
         '

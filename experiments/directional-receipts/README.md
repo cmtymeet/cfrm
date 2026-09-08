@@ -5,6 +5,15 @@ experiment composes real Semaphore proofs and RFC 9474 blind RSA into the two
 operations proposed in [the directional accounting study](../../studies/directional-blind-receipts.md).
 It does not implement a participation controller or change cfrm's shipping APIs.
 
+The separate [stateless allocation-authorization verifier](ALLOCATION-AUTHORIZATION.md)
+passes all ten tests at `d0a38fa9fdfd0a1adcffb6da33a7dfe12bcd8459`
+([Crow 9/25](https://crow.corbet.ch/repos/9/pipeline/25)). It checks actual cvld
+admission and certified-key permission for an initial or rollover request, binding
+eligibility policy and immutable rule configuration separately. This result does
+not consume a nonce or fund an allocation; those effects belong to the future
+controller transaction. The linked contract records the exact fail-first run,
+wire format and scope independently of the receipt/MLS suites below.
+
 The new [release-attestation tests](attestations.test.js) reached 16 intended
 failures at `907616cde9224d1be8b2f49ac2c68f269f555fc3`, while all 22 raw cases
 passed. The implementation now passes all 38 cases at

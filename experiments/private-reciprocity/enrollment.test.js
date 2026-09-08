@@ -47,8 +47,8 @@ function fixture(t) {
       chatPublicKey: raw(chatKey.publicKey), policyDigest, issuedAt: NOW, expiresAt: NOW + 100, ...changes };
     return { ...grant, signature: sign(null, certBytes(grant), issuer.privateKey).toString('base64url') };
   };
-  const request = async (sem = identity, chatKey = chat, grant = certify(chatKey)) => {
-    const envelope = await service.begin(grant, sem.commitment.toString());
+  const request = async (sem = identity, chatKey = chat, grant = certify(chatKey), target = service) => {
+    const envelope = await target.begin(grant, sem.commitment.toString());
     return { grant, ...envelope, publicKey: sem.publicKey.map(String),
       semaphoreSignature: signatureJSON(sem.signMessage(enrollmentMessage(envelope.challenge))),
       chatSignature: sign(null, enrollmentBytes(envelope.challenge), chatKey.privateKey).toString('base64url') };
@@ -124,18 +124,36 @@ test('challenge replay and expiry cannot create or rotate a binding', async t =>
   advance(NOW + 5);
   assert.equal(await service.enroll(expired), false);
 });
-test('independent connections and process restart cannot change the committed mapping', async t => {
-  const { service, request, identity, options, ledger, path, communityId } = fixture(t);
-  const otherLedger = openEnrollmentLedger(path);
-  const otherService = createEnrollmentService({ ...options, ledger: otherLedger });
+test('independent connections and a restarted service cannot change the committed mapping', async t => {
+  const { service, request, identity, chat, certify, options, ledger, path, communityId } = fixture(t);
+  let otherLedger = openEnrollmentLedger(path);
+  let otherService = createEnrollmentService({ ...options, ledger: otherLedger });
   t.after(() => { otherService.close(); otherLedger.close(); });
   assert.equal(await service.enroll(await request()), true);
   const replacement = new Identity('second-process-replacement');
-  const grant = (await request()).grant;
-  const envelope = await otherService.begin(grant, replacement.commitment.toString());
-  // The ordinary service also rejects replacement even without a process restart.
-  assert.equal(await service.enroll(await request(replacement)), false);
+  assert.equal(await otherService.enroll(await request(replacement, chat, certify(), otherService)), false);
   assert.equal(otherLedger.members(communityId)[0].commitment, identity.commitment.toString());
+
+  otherService.close();
+  otherLedger.close();
+  otherLedger = openEnrollmentLedger(path);
+  otherService = createEnrollmentService({ ...options, ledger: otherLedger });
+  assert.equal(otherLedger.members(communityId)[0].commitment, identity.commitment.toString());
+  assert.equal(await otherService.enroll(await request(replacement, chat, certify(), otherService)), false);
+  assert.equal(await otherService.enroll(await request(identity, chat, certify(), otherService)), true);
   assert.equal(ledger.members(communityId).length, 1);
-  assert.ok(envelope.challenge);
+});
+test('two independent services racing different commitments can commit only one binding', async t => {
+  const { service, request, identity, chat, certify, options, ledger, path, communityId, memberId } = fixture(t);
+  const otherLedger = openEnrollmentLedger(path);
+  const otherService = createEnrollmentService({ ...options, ledger: otherLedger });
+  t.after(() => { otherService.close(); otherLedger.close(); });
+  const replacement = new Identity('racing-replacement');
+  const first = await request();
+  const second = await request(replacement, chat, certify(), otherService);
+  const outcomes = await Promise.all([service.enroll(first), otherService.enroll(second)]);
+  assert.equal(outcomes.filter(Boolean).length, 1);
+  const expected = [{ memberId, commitment: (outcomes[0] ? identity : replacement).commitment.toString() }];
+  assert.deepEqual(ledger.members(communityId), expected);
+  assert.deepEqual(otherLedger.members(communityId), expected);
 });

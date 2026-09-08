@@ -4,6 +4,10 @@
   "private": true,
   "description": "Deterministic experiments for live communities and numerical participation rules",
   "type": "module",
+  "exports": {
+    "./rendezvous": "./src/rendezvous.js",
+    "./experiments": "./src/simulate.js"
+  },
   "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test test/*.test.js",

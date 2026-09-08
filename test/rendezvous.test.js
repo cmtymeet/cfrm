@@ -15,9 +15,9 @@ const grantBytes = grant => Buffer.from(JSON.stringify(['cvld.admission.v1', gra
 // pinned cvld verifier to exercise the actual cross-repository implementation.
 function fixtureVerifier({ grant, trustedPublicKey, communityId, policyDigest, now }) {
   try {
-    const publicKey = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: trustedPublicKey }, format: 'jwk' });
+    const publicKey = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: Buffer.from(trustedPublicKey).toString('base64url') }, format: 'jwk' });
     return grant.version === 1 && grant.communityId === communityId && grant.policyDigest === policyDigest &&
-      grant.issuerKeyId === digest(Buffer.from(trustedPublicKey, 'base64url')) &&
+      grant.issuerKeyId === digest(trustedPublicKey) &&
       grant.issuedAt <= now && now < grant.expiresAt &&
       verify(null, grantBytes(grant), publicKey, Buffer.from(grant.signature, 'base64url'));
   } catch { return false; }
@@ -40,7 +40,7 @@ function fixture(t, changes = {}) {
     return { ...grant, signature: sign(null, grantBytes(grant), issuer.privateKey).toString('base64url') };
   };
   const registry = createRendezvous({
-    communityId: 'community.example', policyDigest, trustedPublicKey: raw(issuer.publicKey),
+    communityId: 'community.example', policyDigest, trustedPublicKey: Buffer.from(raw(issuer.publicKey), 'base64url'),
     verifyAdmission: admissionVerifier, clock: () => now,
     leaseSeconds: 10, challengeSeconds: 5, maxMembers: 100, maxReplayEntries: 200,
     setTimer: (callback, milliseconds) => {
@@ -122,10 +122,11 @@ test('challenge and endpoint tampering, foreign-instance challenges and future s
   for (const challenge of [
     { ...candidate.challenge, endpoint: { ...ONION, port: 80 } },
     { ...candidate.challenge, memberId: digest('other') },
-    { ...candidate.challenge, issuedAt: NOW + 100 },
+    { ...candidate.challenge, issuedAt: NOW + 100, expiresAt: NOW + 105 },
     { ...candidate.challenge, purpose: 'disconnect' },
   ]) {
-    const signed = sign(null, rendezvousBytes({ ...challenge, purpose: 'register' }), f.alice.privateKey).toString('base64url');
+    const signed = 'purpose' in challenge ? candidate.signature :
+      sign(null, rendezvousBytes(challenge), f.alice.privateKey).toString('base64url');
     assert.equal(await f.registry.register({ ...candidate, challenge, signature: signed }), null);
   }
   assert.equal(await other.registry.register(candidate), null);
@@ -201,7 +202,7 @@ test('replay storage is bounded and renewed registration works after old replay 
   assert.ok(await register());
   assert.equal(registry.counts().replayMarkers, 1);
 });
-test('changing caller-owned objects cannot change stored identity, endpoint or trust configuration', async t => {
+test('changing caller-owned objects cannot change stored identity or endpoint', async t => {
   const { registry, proof } = fixture(t);
   const candidate = await proof();
   const session = await registry.register(candidate);

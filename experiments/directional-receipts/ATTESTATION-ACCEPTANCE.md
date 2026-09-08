@@ -1,6 +1,6 @@
 # Counter-backed release attestations: next acceptance boundary
 
-**Candidate implementation after actual fail-first execution; no policy selection.** The current
+**Counter-backed statement implementation is tested; no policy selection.** The current
 [22-case experiment](README.md) establishes the two raw directional counter
 operations. The [cmsg release proposal](https://github.com/corbet-labs/cmsg/blob/main/studies/first-contact-release-gate.md)
 adds a conditional sender-side gate. The next increment must connect actual
@@ -9,16 +9,17 @@ client test do not establish this connection. The initial
 [16 executable cases](attestations.test.js) cover groups 1–7 below with actual
 cryptographic fixtures. All 16 reached the intended stub failures at
 `907616cde9224d1be8b2f49ac2c68f269f555fc3`, alongside 22 passing raw cases. The
-candidate now implements these statements and shares the original atomic ledger;
-its full 38-case green run is still required. Groups 8–10 remain separate
+implementation shares the original atomic ledger and passes all 38 cases at
+`fdf739e3fdc40aedbc61a552d41b9fc83623f8b4`: the unchanged 22 raw cases plus the
+16 release cases. This includes independent Node verification of the exact cmsg
+canonical arrays, not a Rust/MLS round trip. Groups 8–10 remain separate
 unimplemented composition work.
 
-Keep the existing boolean redemption API as the tested baseline until this
-increment is reviewed. An isolated release-receipt service may expose the same
-two operation names with the structured success results below; it must not alter
-a shipping API or select a participation policy. First commit executable tests
-against rejecting stubs, run them on the existing CI worker, and only implement
-after failures reach these assertions with real prerequisite crypto completed.
+The boolean redemption API remains the tested raw baseline. The isolated
+release-receipt service exposes the same two operation names with the structured
+success results below. It changes no shipping API and selects no participation
+policy. The new cases reached assertions against rejecting stubs after actual
+prerequisite crypto execution before the implementation was written.
 
 ## Counter and release contract
 
@@ -122,9 +123,9 @@ current cvld admission and private preflight ownership before content release.
 
 ## Acceptance groups
 
-These acceptance groups are not yet completed evidence. The first seven have
-real stub-failure evidence and an implementation awaiting validation; the final
-three remain proposals:
+The first seven acceptance groups have real stub-failure evidence followed by
+passing implementation tests. The final three remain unverified composition
+proposals:
 
 1. **Real counter-backed outputs.** Use actual enrolled sender-excluded
    Semaphore proofs, real cvld admission verification and maintained blind RSA.

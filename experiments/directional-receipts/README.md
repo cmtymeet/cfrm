@@ -7,9 +7,9 @@ It does not implement a participation controller or change cfrm's shipping APIs.
 
 The new [release-attestation tests](attestations.test.js) reached 16 intended
 failures at `907616cde9224d1be8b2f49ac2c68f269f555fc3`, while all 22 raw cases
-passed. The candidate now implements those statements through the same internal
-verification and ledger transactions. A complete 38-case run is required before
-claiming the shared implementation is validated. `npm test` runs both suites;
+passed. The implementation now passes all 38 cases at
+`fdf739e3fdc40aedbc61a552d41b9fc83623f8b4`: 22 raw cases plus 16 release-attestation
+cases using the same internal verification and ledger transactions. `npm test` runs both suites;
 `npm run test:receipts` runs the raw baseline and `npm run test:attestations` runs
 the release-attestation cases.
 
@@ -57,7 +57,7 @@ The lockfile combines previously pinned package entries from the two primitive
 experiments and installs successfully with remote `npm ci`. No local dependency
 installation, build or test has been performed.
 
-The SQLite schema is disposable experiment state. The release candidate adds
+The SQLite schema is disposable experiment state. The release service adds
 cached responses and a recipient/release-nonce index to the spend table; existing
 databases from the earlier schema are not migrated. Start this version with a
 fresh experiment database. No existing database is automatically deleted.
@@ -158,5 +158,6 @@ operator signing key for each statement purpose. The service caches each exact
 signed result in its corresponding debit transaction and limits one debit per
 recipient/release nonce. It preserves the first attested chat key and common
 expiry during recovery. The 16 new cases use real enrollment, proof and blind-RSA
-fixtures; their candidate implementation still awaits its green run. Actual cmsg
-preflight/MLS/permit integration requires separate evidence.
+fixtures and pass alongside all 22 raw cases. Their independent Node verifier
+checks the exact cmsg canonical arrays; this is not yet a Rust/MLS round trip.
+Actual cmsg preflight/MLS/permit integration requires separate evidence.

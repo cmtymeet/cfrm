@@ -62,6 +62,8 @@ export function openLedger(path) {
   db.exec(`PRAGMA journal_mode=WAL;
     PRAGMA busy_timeout=5000;
     PRAGMA foreign_keys=ON;
+    CREATE TABLE IF NOT EXISTS retirement (singleton INTEGER PRIMARY KEY CHECK(singleton=1), through INTEGER NOT NULL);
+    INSERT INTO retirement(singleton,through) VALUES (1,0) ON CONFLICT DO NOTHING;
     CREATE TABLE IF NOT EXISTS contexts (id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS allocations (
       context TEXT NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
@@ -80,7 +82,11 @@ export function openLedger(path) {
     catch (error) { db.exec('ROLLBACK'); throw error; }
   }
   function register(info) {
+    if (retired(info)) throw new Error('Epoch retired');
     db.prepare('INSERT INTO contexts(id,expires_at) VALUES (?,?) ON CONFLICT(id) DO NOTHING').run(info.id, info.expiresAt);
+  }
+  function retired(info) {
+    return info.expiresAt <= db.prepare('SELECT through FROM retirement WHERE singleton=1').get().through;
   }
   return {
     allocate(info, allocation, quota) {
@@ -117,7 +123,7 @@ export function openLedger(path) {
       return transaction(() => {
         // Re-read trusted time after acquiring the write lock; another process
         // may have pruned expired replay state while verification was pending.
-        if (!active(info, clock())) return false;
+        if (!active(info, clock()) || retired(info)) return false;
         register(info);
         const prior = db.prepare('SELECT claim_hash FROM spends WHERE context=? AND nullifier=?').get(info.id, nullifier);
         if (prior) return claimHash !== undefined && prior.claim_hash === claimHash;
@@ -125,7 +131,15 @@ export function openLedger(path) {
         return true;
       });
     },
-    prune(now) { integer(now); db.prepare('DELETE FROM contexts WHERE expires_at<=?').run(now); },
+    prune(now) {
+      integer(now);
+      transaction(() => {
+        // One durable scalar prevents wall-clock rollback from reactivating
+        // epochs whose spent-token state has already been discarded.
+        db.prepare('UPDATE retirement SET through=max(through,?) WHERE singleton=1').run(now);
+        db.prepare('DELETE FROM contexts WHERE expires_at<=?').run(now);
+      });
+    },
     counts() {
       return Object.fromEntries(['allocations', 'issuances', 'spends'].map((name) => [name, db.prepare(`SELECT count(*) AS n FROM ${name}`).get().n]));
     },

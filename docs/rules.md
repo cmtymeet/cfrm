@@ -14,10 +14,11 @@ All values here are explicit experiment parameters. They are not settled communi
 | `requestTtl` | 5 | Synthetic clock ticks before an unaccepted request expires |
 | `presenceTtl` | 20 | Ticks before an unrenewed presence lease expires |
 | `voting` | false | Enable one ±1 vote per eligible connected credential per epoch |
+| `imbalanceEpochs` | 0 | Balance horizon: 0 means lifetime, positive values keep that many epochs |
 
 One new introduction consumes one token when delivered and increments its sender's first-send count. Delivery does not change the recipient's balance. Only explicit acceptance increments the recipient's first-receive count. A first reply increments the recipient's first-send and original sender's first-receive counts. It costs no introduction token, allowing recovery from imbalance. Later conversation messages do not affect these counters.
 
-New introductions stop when the sender's `sent − received` reaches the limit. New acceptance stops when the recipient's `received − sent` reaches it. Existing first replies remain possible. Declines, expiry and silence do not refund a delivered token; otherwise sequential spam could reuse one token. Failed delivery costs nothing. A local block or closed inbox denies a new request without allegations, reports or standing penalties.
+New introductions stop when the sender's `sent − received` in the selected horizon reaches the limit. New acceptance stops when the recipient's `received − sent` reaches it. With a positive horizon, per-epoch event counts expire from the balance calculation; lifetime first-contact uniqueness, allowance spending and activity history do not reset. Existing first replies remain possible, including replies to approaches outside the current horizon. Declines, expiry and silence do not refund a delivered token; otherwise sequential spam could reuse one token. Failed delivery costs nothing. A local block or closed inbox denies a new request without allegations, reports or standing penalties.
 
 An unordered pair can have only one first introduction for the lifetime of the synthetic credentials. Reconnection, changed display names and new groups do not reset it. A declined or expired approach is terminal in this candidate: there is no retry invitation protocol yet. This strong choice bounds replay but can prevent wanted reconnection after an accidental expiry.
 
@@ -41,4 +42,4 @@ An established contact can invite another without another first-contact charge, 
 
 ## Known failure
 
-Permanent imbalance conflates malicious nonreciprocity with ordinary rejection, selective conversation and unavailable peers. The measured default run eventually stops cooperative initiators too. A future experiment must compare bounded debt recovery, finite windows or reserved newcomer reach without refunding delivered messages or removing the economic bound. Increasing the limit postpones this failure; it does not solve it.
+Permanent imbalance conflates malicious nonreciprocity with ordinary rejection, selective conversation and unavailable peers. The measured lifetime baseline eventually stops cooperative initiators too. Bounded-window comparisons now exercise a recovery path without refunding delivered messages or removing the economic bound. Recovery also gives nonresponsive attackers renewed reach; the relevant result is the measured tradeoff, not a claim that rolling windows distinguish motives. The lifetime baseline remains the default for reproducibility, while `imbalanceEpochs: 2` selects the first candidate for comparison.

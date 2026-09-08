@@ -37,7 +37,7 @@ The fixed pair cannot repeatedly farm one relationship. The ring can fabricate a
 
 All 64 cooperative participants end at the maximum outbound imbalance. A cooperative participant can accumulate permanent debt from ordinary rejection, silent recipients or peers leaving. Renewing tokens does not repair that debt. Aggregate new approaches consequently fall from 223 in the first epoch to one in the last.
 
-This is a functional failure of the strict lifetime rule, not evidence that the allowance bound failed. A recipient's local choice must not become a permanent punishment imposed on another person. A next policy experiment should compare limited debt recovery or finite windows while retaining nonrefundable introduction costs and a hard grant cap.
+This is a functional failure of the strict lifetime rule, not evidence that the allowance bound failed. A recipient's local choice must not become a permanent punishment imposed on another person. The [subsequent window comparison](window-comparison.md) now measures recovery while retaining nonrefundable introduction costs and a hard grant cap.
 
 The parameter sweep confirms the tradeoff without solving it:
 

@@ -18,7 +18,8 @@ npm run sweep
 | [Boundaries](docs/boundaries.md) | Live presence, stable IDs and the unsolved private accounting seam |
 | [Experiments](experiments/README.md) | Reproducible terminal commands and behavior toggles |
 | [Results](studies/first-experiment.md) | Measured collusion, limits and fairness failure |
+| [Recovery comparison](studies/window-comparison.md) | 36 runs comparing bounded history with permanent debt |
 
-The first 100-participant experiment limits flooding and reconnect resets, but its strict lifetime imbalance rule eventually stalls cooperative members. It is a measured policy candidate, not an adopted production rule. The synthetic model knows relationships so that experiments can inspect them; an operator must not deploy that model as a member database.
+The first 100-participant experiment limits flooding and reconnect resets, but its strict lifetime imbalance rule eventually stalls cooperative members. Bounded-window variants preserve later cooperative progress while allowing more hostile outreach; seeded comparisons measure both effects. These are experimental policy choices. The synthetic model knows relationships so that experiments can inspect them; an operator must not deploy that model as a member database.
 
 Authored material is licensed under [FSL-1.1-ALv2](LICENSE.md).

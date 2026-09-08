@@ -6,17 +6,17 @@ This is a bounded contract and adversarial specification. The enrollment impleme
 
 One stable community member ID may have one immutable Semaphore commitment. Different member IDs cannot share a commitment within a community. A second passkey or a changed certified chat key may authenticate the same binding; neither operation may rotate it. Otherwise lifetime acknowledgement nullifiers would reset.
 
-The client derivation uses the **stable random cvld wallet root**, not a passkey-specific PRF result or a chat signing key. The version-one encoding is:
+The client derivation uses **`wallet.storageKey('cfrm-semaphore')`**, stable purpose-separated material from the random cvld wallet root. The root itself remains unexported. This input is neither a passkey-specific PRF result nor a chat signing key. The version-one encoding is:
 
 ```text
-IKM  = walletRoot                         # exactly 32 random bytes
+IKM  = wallet.storageKey("cfrm-semaphore") # exactly 32 stable client-held bytes
 salt = UTF8("cfrm.semaphore.wallet.v1")
 info = UTF8(JSON.stringify(["cfrm.semaphore.identity.v1", communityId]))
 seed = HKDF-SHA256(IKM, salt, info, 32)    # bytes, never a hexadecimal string
 identity = new Identity(seed)
 ```
 
-The community follows the existing canonical ASCII scope grammar; there is no environment, deployment host, current time, passkey ID or chat key in the derivation. Restoring or rewrapping the same encrypted wallet must reproduce the same commitment. Cross-runtime vectors remain to be executed before claiming portable compatibility. Losing that root requires restoring the same encrypted wallet; silently enrolling a replacement commitment is forbidden.
+The community follows the existing canonical ASCII scope grammar; there is no environment, deployment host, current time, passkey ID or chat key in the derivation. Restoring or rewrapping the same encrypted wallet must reproduce the same commitment. The additional cfrm purpose/community separation is intentional even though cvld already separates storage-key purposes. Cross-runtime vectors remain to be executed before claiming portable compatibility. Losing the wallet requires restoring the same encrypted wallet; silently enrolling a replacement commitment is forbidden.
 
 The durable enrollment store contains only `(communityId, memberId, commitment)` plus indexes. It contains no profile, network endpoint, current-presence flag, passkey, phone number, payment detail or behavioral ban. This mapping enables a qualified eligibility snapshot; snapshot publication and completeness remain separate.
 

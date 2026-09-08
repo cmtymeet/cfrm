@@ -32,8 +32,8 @@ function fixture(t) {
   const communityId = 'community.example';
   const memberId = id('member');
   const policyDigest = id('policy');
-  const root = new Uint8Array(32).fill(7);
-  const identity = deriveSemaphoreIdentity(root, communityId);
+  const walletMaterial = new Uint8Array(32).fill(7); // Synthetic wallet.storageKey('cfrm-semaphore') output.
+  const identity = deriveSemaphoreIdentity(walletMaterial, communityId);
   let now = NOW;
   const directory = mkdtempSync(join(tmpdir(), 'cfrm-enrollment-'));
   const path = join(directory, 'bindings.sqlite');
@@ -53,16 +53,16 @@ function fixture(t) {
       semaphoreSignature: signatureJSON(sem.signMessage(enrollmentMessage(envelope.challenge))),
       chatSignature: sign(null, enrollmentBytes(envelope.challenge), chatKey.privateKey).toString('base64url') };
   };
-  return { service, ledger, identity, chat, issuer, root, communityId, memberId,
+  return { service, ledger, identity, chat, issuer, walletMaterial, communityId, memberId,
     options, path, certify, request, advance: value => { now = value; } };
 }
 
-test('the restored wallet root gives one stable community identity independent of chat/passkey rewrapping', () => {
-  const root = new Uint8Array(32).fill(7);
-  const before = deriveSemaphoreIdentity(root, 'community.example');
-  const restored = deriveSemaphoreIdentity(Uint8Array.from(root), 'community.example');
+test('restored wallet material gives one stable community identity independent of chat/passkey rewrapping', () => {
+  const walletMaterial = new Uint8Array(32).fill(7);
+  const before = deriveSemaphoreIdentity(walletMaterial, 'community.example');
+  const restored = deriveSemaphoreIdentity(Uint8Array.from(walletMaterial), 'community.example');
   assert.equal(before.commitment, restored.commitment);
-  assert.notEqual(before.commitment, deriveSemaphoreIdentity(root, 'other.example').commitment);
+  assert.notEqual(before.commitment, deriveSemaphoreIdentity(walletMaterial, 'other.example').commitment);
   assert.throws(() => deriveSemaphoreIdentity(new Uint8Array(31), 'community.example'));
 });
 test('both certified chat-key and existing Semaphore key possession create one immutable binding', async t => {

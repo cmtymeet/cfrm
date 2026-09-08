@@ -6,6 +6,7 @@ const policy = {
   initialTokens: 3, epochGrant: 2, maxEpochGrant: 6, tokenCap: 8,
   growthPerActiveEpoch: 1, maxImbalance: 3, pendingCap: 3,
   requestTtl: 5, presenceTtl: 20, voting: false,
+  imbalanceEpochs: 0,
 };
 function fixture(overrides = {}, ids = ['a', 'b', 'c', 'd', 'e']) {
   const admitted = new Set(ids);
@@ -190,4 +191,37 @@ test('invalid policy values fail closed', () => {
     { pendingCap: NaN }, { presenceTtl: 0 }, { epochGrant: 7 }, { requestTtl: 0 }]) {
     assert.throws(() => fixture(bad));
   }
+});
+
+test('bounded imbalance history restores outreach after unanswered requests without minting maturity', () => {
+  const { forum } = fixture({ initialTokens: 8, maxImbalance: 1, imbalanceEpochs: 1 });
+  forum.introduce('a', 'b', 1);
+  assert.equal(forum.introduce('a', 'c', 1), 'outbound-imbalance');
+  forum.advanceEpoch();
+  assert.equal(forum.introduce('a', 'c', 1), 'delivered');
+  assert.equal(forum.state('a').activeEpochs, 0);
+  assert.equal(forum.state('a').sent, 2);
+  assert.equal(forum.state('a').tokens, 7);
+});
+test('multi-epoch windows retain recent debt, then forget only expired balance events', () => {
+  const { forum } = fixture({ maxImbalance: 1, imbalanceEpochs: 2 });
+  forum.introduce('a', 'b', 1);
+  forum.advanceEpoch();
+  assert.equal(forum.introduce('a', 'c', 1), 'outbound-imbalance');
+  forum.advanceEpoch();
+  assert.equal(forum.introduce('a', 'c', 1), 'delivered');
+  assert.equal(forum.introduce('a', 'b', 1), 'pending');
+});
+test('window recovery does not reset token spending, first-contact history or free reply paths', () => {
+  const { forum } = fixture({ initialTokens: 1, epochGrant: 0, growthPerActiveEpoch: 0, imbalanceEpochs: 1 });
+  forum.introduce('a', 'b', 1);
+  forum.advanceEpoch();
+  assert.equal(forum.introduce('a', 'c', 1), 'no-tokens');
+  forum.accept('b', 'a', 1);
+  assert.equal(forum.reply('b', 'a', 1), 'replied');
+  assert.equal(forum.introduce('a', 'b', 1), 'established');
+});
+test('negative or fractional imbalance horizons are rejected', () => {
+  assert.throws(() => fixture({ imbalanceEpochs: -1 }));
+  assert.throws(() => fixture({ imbalanceEpochs: 1.5 }));
 });

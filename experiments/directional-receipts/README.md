@@ -1,6 +1,6 @@
 # Directional receipt composition experiment
 
-**Experimental implementation under runtime validation; unselected.** This
+**Tested experimental implementation; unselected as a participation policy.** This
 experiment composes real Semaphore proofs and RFC 9474 blind RSA into the two
 operations proposed in [the directional accounting study](../../studies/directional-blind-receipts.md).
 It does not implement a participation controller or change cfrm's shipping APIs.
@@ -16,7 +16,8 @@ return `true`, including after restart, without another counter increment.
 
 Neither counter proves text delivery, reading or sincere conversation. This
 boundary alone allows a recipient to omit redemption. A separate prospective
-sender-side content release gate may change that limitation for honest senders;
+[sender-side content release gate](https://github.com/corbet-labs/cmsg/blob/main/studies/first-contact-release-gate.md)
+may change that limitation for honest senders;
 these specifications neither select voluntary omission as final policy nor
 implement that gate. The boolean redemption result is an experimental API, not
 a frozen public contract.
@@ -44,8 +45,8 @@ proof uses all 16 qualified identities other than the named sender. Signed cvld
 admission fixtures do not establish a live independent factor provider.
 
 The lockfile combines previously pinned package entries from the two primitive
-experiments; the remote `npm ci` result remains required evidence. No local
-dependency installation, build or test has been performed.
+experiments and installs successfully with remote `npm ci`. No local dependency
+installation, build or test has been performed.
 
 ## Test boundary
 
@@ -54,9 +55,11 @@ The original 21 cases reached their intended stub failures on Crow at source
 `3f3f75c5e29741f4260f4b36b94c19fe4634e1d2`, all 21 original cases passed and the
 new twenty-second case failed with a missing expected rejection: a configured
 same-algorithm private key did not match the advertised cohort modulus. The
-binding check now compares the private key's public parameters through maintained
-SubtleCrypto before proof/signing work or a sender debit. The complete 22-case
-rerun remains required evidence for this correction.
+binding check compares the private key's public parameters through maintained
+SubtleCrypto before proof/signing work or a sender debit. All 22 tests pass at
+`207a8df6e767bda9523da531682425d4b879470c` on the existing Node 24 CI worker.
+This verifies the two raw counter operations, not the proposed signed release
+attestations, a participation controller or network composition.
 
 The cases cover actual distinct-membership proofs, own-account authorization,
 cross-connection replay, transactional fault injection, lost response recovery
@@ -134,3 +137,7 @@ network adapter must also bound total workers and ingress bytes before parsing.
 `issue-after-commit`, `receive-before-commit` and `receive-after-commit`. Before
 commit means after tentative writes but within the transaction; after commit
 means before returning a result. No hook is supplied by network clients.
+
+The next bounded proposal is [counter-backed release attestations](ATTESTATION-ACCEPTANCE.md).
+It requires a separate fail-first increment and interoperability evidence; no
+attestation API or hidden release-nonce payload is implemented by this version.

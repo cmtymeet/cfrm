@@ -18,6 +18,8 @@ The operator sees the credited sender and a scoped opaque nullifier, plus whatev
 
 Lifetime pair uniqueness requires lifetime replay markers. This implementation stores a 32-byte scope and 32-byte nullifier per acknowledgement, plus SQLite overhead and an aggregate credit per sender scope. There is deliberately no epoch pruning of these markers. Deleting them while allowing the same identities to return would reopen credit farming. Retention ends only with a deliberate end of that community/accounting lifetime. The storage benchmark measures synthetic records separately from proof performance.
 
+The [immutable enrollment contract](ENROLLMENT.md) specifies the missing stable cvld-member-to-Semaphore binding. Its fail-first tests and stub are separate from the acknowledgement suite, so an unimplemented enrollment path cannot silently be presented as a working dependency.
+
 A colluding qualified member can endorse a sender without receiving a message. Excluding S prevents direct self-credit only when its one stable commitment is honestly bound. Owning multiple qualified identities remains an accepted Sybil limitation. Rotating a Semaphore identity would reset its nullifiers, so commitment rotation cannot be an unauthenticated way to regain first-contact credit. Minimum set size is not a guarantee of honest anonymity: colluding or otherwise known members reduce the effective anonymity set.
 
 This is an acknowledgement primitive, not complete private reciprocity accounting. It does not pair private sent/received counters, prove that an approach permit reached this particular recipient, or implement all numerical policies from the simulator.

@@ -33,6 +33,7 @@ steps:
       - npm run artifacts --prefix experiments/private-reciprocity
       - |
         ci_test_status=0
-        npm test --prefix experiments/private-reciprocity || ci_test_status=1
-        node --test --test-concurrency=1 experiments/private-reciprocity/enrollment.test.js || ci_test_status=1
+        npm run test:acknowledgement --prefix experiments/private-reciprocity || ci_test_status=1
+        npm run test:enrollment --prefix experiments/private-reciprocity || ci_test_status=1
+        node experiments/private-reciprocity/storage-benchmark.js || ci_test_status=1
         exit "$ci_test_status"

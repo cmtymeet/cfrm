@@ -22,3 +22,5 @@ jobs:
         run: npm run experiment -- --json
       - name: Parameter sweep
         run: npm run sweep
+      - name: Imbalance policy comparison
+        run: npm run experiment -- --compare --epochs 16 --json

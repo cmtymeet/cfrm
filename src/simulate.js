@@ -6,7 +6,7 @@ export const defaultExperiment = Object.freeze({
     'colluding-pair': 2, 'colluding-ring': 8, resetter: 6 }),
   policy: Object.freeze({ initialTokens: 3, epochGrant: 2, maxEpochGrant: 6, tokenCap: 8,
     growthPerActiveEpoch: 1, maxImbalance: 3, pendingCap: 3,
-    requestTtl: 5, presenceTtl: 20, voting: false }),
+    requestTtl: 5, presenceTtl: 20, voting: false, imbalanceEpochs: 0 }),
 });
 
 function randomSource(seed) {
@@ -60,6 +60,7 @@ export function simulate(config) {
   let now = 0;
   let withinTokenCap = true;
   let nonnegativeTokens = true;
+  const lateStarts = new Map();
   const randomPeer = member => {
     const index = members.indexOf(member);
     const pick = Math.floor(random() * (members.length - 1));
@@ -94,6 +95,9 @@ export function simulate(config) {
     for (let round = 0; round < rounds; round++) {
       now++;
       for (const member of members) forum.connect(member.id, now);
+      if (epoch === Math.floor(epochs * 0.75) && round === 0) {
+        for (const member of members) lateStarts.set(member.id, forum.state(member.id).approaches);
+      }
       for (const member of shuffled(members, random)) strategies[member.kind](member, epoch);
       for (const member of shuffled(members, random)) {
         for (const request of forum.requestsFor(member.id)) {
@@ -131,6 +135,8 @@ export function simulate(config) {
       maxInboundImbalance: Math.max(...states.map(state => state.received - state.sent)),
       maxOutboundImbalance: Math.max(...states.map(state => state.sent - state.received)),
       totalGranted: states.reduce((sum, state) => sum + state.grantTotal, 0),
+      reciprocatedApproaches: cohort.reduce((sum, member) => sum + forum.outcomes(member.id).reciprocatedApproaches, 0),
+      lateApproaches: cohort.reduce((sum, member) => sum + forum.state(member.id).approaches - lateStarts.get(member.id), 0),
     };
   }
   const perMemberBound = policy.initialTokens + (epochs - 1) * policy.maxEpochGrant;
@@ -143,6 +149,10 @@ export function simulate(config) {
     bound: members.length * perMemberBound,
     invariants: { withinGrantBound, withinTokenCap, nonnegativeTokens },
     final: forum.metrics(), byBehavior, timeline,
+    exposure: {
+      maxUnsolicitedPerTarget: Math.max(...members.map(member => forum.outcomes(member.id).unsolicitedReceived)),
+      maxPending: Math.max(...members.map(member => forum.outcomes(member.id).maxPending)),
+    },
   };
 }
 
@@ -155,4 +165,27 @@ export function sweep(config, seeds = [1, 42, 101], imbalances = [1, 3, 6]) {
       matureMembers: result.final.matureMembers,
       withinGrantBound: result.invariants.withinGrantBound };
   }));
+}
+
+export function comparePolicies(config, seeds = [1, 42, 101], horizons = [0, 1, 2, 4]) {
+  const populations = {
+    balanced: { cooperative: 80, flooder: 10, nonreciprocator: 10 },
+    mixed: defaultExperiment.population,
+    hostile: { cooperative: 40, flooder: 30, nonreciprocator: 20, resetter: 10 },
+  };
+  return Object.entries(populations).flatMap(([population, members]) => seeds.flatMap(seed =>
+    horizons.map(imbalanceEpochs => {
+      const result = simulate({ ...config, seed, population: members,
+        policy: { ...config.policy, imbalanceEpochs } });
+      const cooperative = result.byBehavior.cooperative;
+      const hostile = ['flooder', 'resetter'].map(kind => result.byBehavior[kind]).filter(Boolean);
+      return { population, seed, imbalanceEpochs,
+        cooperativeReciprocated: cooperative.reciprocatedApproaches,
+        cooperativeLateApproaches: cooperative.lateApproaches,
+        hostileApproaches: hostile.reduce((sum, state) => sum + state.approaches, 0),
+        hostileUnreciprocated: hostile.reduce((sum, state) => sum + state.approaches - state.reciprocatedApproaches, 0),
+        maxUnsolicitedPerTarget: result.exposure.maxUnsolicitedPerTarget,
+        maxPending: result.exposure.maxPending,
+        withinGrantBound: result.invariants.withinGrantBound };
+    })));
 }

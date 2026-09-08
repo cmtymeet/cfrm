@@ -15,7 +15,7 @@ export class ForumExperiment {
 
   constructor(policy, syntheticEligibilityOracle) {
     const nonnegative = ['initialTokens', 'epochGrant', 'maxEpochGrant',
-      'tokenCap', 'growthPerActiveEpoch'];
+      'tokenCap', 'growthPerActiveEpoch', 'imbalanceEpochs'];
     const positive = ['maxImbalance', 'pendingCap', 'requestTtl', 'presenceTtl'];
     for (const key of [...nonnegative, ...positive]) {
       if (!Number.isSafeInteger(policy[key]) || policy[key] < (positive.includes(key) ? 1 : 0)) {
@@ -50,7 +50,7 @@ export class ForumExperiment {
       this.#members.set(id, {
         tokens: this.#policy.initialTokens, sent: 0, received: 0, approaches: 0,
         activeEpochs: 0, activity: false, grantTotal: this.#policy.initialTokens,
-        open: true, blocks: new Set(),
+        open: true, blocks: new Set(), windows: new Map(), maxPending: 0,
       });
     }
     this.#presence.set(id, now + this.#policy.presenceTtl);
@@ -78,6 +78,28 @@ export class ForumExperiment {
     return [...this.#contacts.values()]
       .filter(contact => contact.to === id && contact.status === 'pending')
       .map(contact => ({ from: contact.from }));
+  }
+
+  /** Omniscient experiment outcomes; neither identities nor edges are serialized. */
+  outcomes(id) {
+    const contacts = [...this.#contacts.values()];
+    return {
+      reciprocatedApproaches: contacts.filter(contact => contact.from === id && contact.status === 'replied').length,
+      unsolicitedReceived: contacts.filter(contact => contact.to === id).length,
+      maxPending: this.#member(id).maxPending,
+    };
+  }
+
+  #count(member, direction) {
+    member[direction]++;
+    const window = member.windows.get(this.#epoch) ?? { sent: 0, received: 0 };
+    window[direction]++;
+    member.windows.set(this.#epoch, window);
+  }
+
+  #imbalance(member) {
+    if (this.#policy.imbalanceEpochs === 0) return member.sent - member.received;
+    return [...member.windows.values()].reduce((sum, window) => sum + window.sent - window.received, 0);
   }
 
   setOpen(id, open) {
@@ -115,11 +137,12 @@ export class ForumExperiment {
     if (!recipient.open) return this.#reject('closed');
     const pending = [...this.#contacts.values()].filter(c => c.to === to && c.status === 'pending').length;
     if (pending >= this.#policy.pendingCap) return this.#reject('inbox-full');
-    if (sender.sent - sender.received >= this.#policy.maxImbalance) return this.#reject('outbound-imbalance');
+    if (this.#imbalance(sender) >= this.#policy.maxImbalance) return this.#reject('outbound-imbalance');
     if (sender.tokens < 1) return this.#reject('no-tokens');
     sender.tokens--;
-    sender.sent++;
+    this.#count(sender, 'sent');
     sender.approaches++;
+    recipient.maxPending = Math.max(recipient.maxPending, pending + 1);
     this.#contacts.set(this.#pair(from, to), {
       from, to, deadline: now + this.#policy.requestTtl, status: 'pending',
     });
@@ -139,8 +162,8 @@ export class ForumExperiment {
     if (['accepted', 'replied'].includes(contact.status)) return 'duplicate';
     if (contact.status !== 'pending') return contact.status;
     const member = this.#member(recipient);
-    if (member.received - member.sent >= this.#policy.maxImbalance) return this.#reject('inbound-imbalance');
-    member.received++;
+    if (-this.#imbalance(member) >= this.#policy.maxImbalance) return this.#reject('inbound-imbalance');
+    this.#count(member, 'received');
     contact.status = 'accepted';
     return 'accepted';
   }
@@ -155,8 +178,8 @@ export class ForumExperiment {
     const a = this.#member(sender);
     const b = this.#member(recipient);
     // A first reply is a recovery path and must not require introduction tokens.
-    b.sent++;
-    a.received++;
+    this.#count(b, 'sent');
+    this.#count(a, 'received');
     a.activity = true;
     b.activity = true;
     contact.status = 'replied';
@@ -193,6 +216,10 @@ export class ForumExperiment {
     this.#votes.clear();
     this.#epoch++;
     for (const member of this.#members.values()) {
+      const oldest = this.#epoch - this.#policy.imbalanceEpochs + 1;
+      for (const epoch of member.windows.keys()) {
+        if (epoch < oldest) member.windows.delete(epoch);
+      }
       if (member.activity) member.activeEpochs++;
       member.activity = false;
       const grant = Math.min(this.#policy.maxEpochGrant,

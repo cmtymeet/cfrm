@@ -26,3 +26,5 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run artifacts
       - run: npm test
+      - name: Quantify synthetic lifetime-nullifier storage
+        run: node storage-benchmark.js

@@ -161,3 +161,8 @@ expiry during recovery. The 16 new cases use real enrollment, proof and blind-RS
 fixtures and pass alongside all 22 raw cases. Their independent Node verifier
 checks the exact cmsg canonical arrays; this is not yet a Rust/MLS round trip.
 Actual cmsg preflight/MLS/permit integration requires separate evidence.
+
+The proposed [actual-member composition harness](COMPOSITION-OUTLINE.md) specifies
+the next bounded check using two native cmsg member keys throughout enrollment,
+account authorization and actual MLS release. It is a design outline awaiting
+review and fail-first implementation, not additional passing evidence.

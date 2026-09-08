@@ -162,7 +162,39 @@ fixtures and pass alongside all 22 raw cases. Their independent Node verifier
 checks the exact cmsg canonical arrays; this is not yet a Rust/MLS round trip.
 Actual cmsg preflight/MLS/permit integration requires separate evidence.
 
-The proposed [actual-member composition harness](COMPOSITION-OUTLINE.md) specifies
+The reviewed [actual-member composition harness](COMPOSITION-OUTLINE.md) specifies
 the next bounded check using two native cmsg member keys throughout enrollment,
-account authorization and actual MLS release. It is a design outline awaiting
-review and fail-first implementation, not additional passing evidence.
+account authorization and actual MLS release. Its [three executable contracts](composition.test.js)
+and [Node driver](composition-driver.js) now target a deliberately rejecting
+native `prepareRelease`; they have not yet been executed. This is not additional
+passing evidence. Each case first enrolls the two actual native chat keys plus
+15 synthetic filler members, publishes the complete qualified checkpoint, and
+generates/verifies an actual sender-excluded qualification proof. No native
+member private key or MLS payload leaves the child.
+
+The three cases require the complete counter-backed MLS release, rejection of
+re-signed negative substitution witnesses followed by a valid retry, and local
+encrypted pending restore with exact ledger-response recovery. Altered negative
+statements are explicitly synthetic test witnesses; every successful release and
+retry must use the untouched statements produced by committed ledger operations.
+The native process owns both members only for this harness. The Node driver spans
+synthetic holder/operator roles; this arrangement is not a production relay or
+evidence of network anonymity.
+
+Use the reviewed native `counter_bridge` executable from cmsg source
+`7395344a12a54711e84581edecd2340908db1e87` for the initial fail-first run, with the
+existing pinned Node dependencies/artifacts and cvld admission module. Supply its
+absolute path explicitly; a missing executable fails rather than skipping or
+substituting fixture signing keys:
+
+```sh
+CVLD_ADMISSION_MODULE="$PWD/.dependencies/cvld/src/admission.js" npm test --prefix experiments/directional-receipts
+CVLD_ADMISSION_MODULE="$PWD/.dependencies/cvld/src/admission.js" CMSG_RELEASE_HARNESS="/absolute/path/to/counter_bridge" npm run test:composition --prefix experiments/directional-receipts
+```
+
+`npm test` keeps the 38-case baseline independent of the native executable.
+`npm run test:all` runs those same 38 cases plus the three composition contracts
+when both environment variables are set. JSON-lines exchanges are sequential,
+bounded to 32 KiB and 30 seconds each, and raw native diagnostics are discarded.
+Each composition case has a 240-second limit. CI reports only fixed diagnostics
+and assertion outcomes. No local build, test or dependency installation was run.

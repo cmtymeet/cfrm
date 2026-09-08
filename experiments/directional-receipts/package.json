@@ -7,7 +7,9 @@
   "scripts": {
     "test": "node --test --test-concurrency=1 receipts.test.js attestations.test.js",
     "test:receipts": "node --test --test-concurrency=1 receipts.test.js",
-    "test:attestations": "node --test --test-concurrency=1 attestations.test.js"
+    "test:attestations": "node --test --test-concurrency=1 attestations.test.js",
+    "test:composition": "node --test --test-concurrency=1 composition.test.js",
+    "test:all": "node --test --test-concurrency=1 receipts.test.js attestations.test.js composition.test.js"
   },
   "license": "SEE LICENSE IN ../../LICENSE.md",
   "dependencies": {

@@ -44,7 +44,7 @@ async function fixture(t, count = 3) {
     }, ledger, clock: () => now, challengeSeconds: 5 };
   const enrollment = createEnrollmentService(enrollmentOptions);
   const publisherOptions = { ledger, communityId, policyDigest, signingKey: publisherKey.privateKey,
-    clock: () => now, epochSeconds: 60, minAnonymity: 16, depth: 7 };
+    clock: () => now, epochSeconds: 60, minAnonymity: 16, depth: 7, maxRetainedLinks: 128 };
   const disposables = [];
   t.after(() => {
     for (const disposable of disposables.reverse()) disposable.close();
@@ -217,6 +217,39 @@ test('a client with a previous checkpoint rejects rollback and a broken signed c
   assert.equal(verifyCheckpoint({ checkpoint: next, ...f.trust, previous: first }), true);
   assert.equal(verifyCheckpoint({ checkpoint: first, ...f.trust, previous: next }), false);
   assert.equal(verifyCheckpoint({ checkpoint: next, ...f.trust, previous: { ...first, digest: id('wrong-chain') } }), false);
+});
+
+test('compact authenticated links let a returning client catch up without archived membership rosters', async t => {
+  const f = await fixture(t, 1);
+  assert.equal(await f.renew(f.members[0], { expiresAt: NOW + 240 }), true);
+  const first = f.publisher.publish();
+  f.advance(NOW + 60);
+  const middle = f.publisher.publish();
+  f.advance(NOW + 120);
+  const latest = f.publisher.publish();
+  const links = f.publisher.links(first.epoch, latest.epoch);
+  assert.equal(links.length, 1);
+  assert.equal(links[0].digest, middle.digest);
+  assert.equal(Object.hasOwn(links[0], 'commitments'), false);
+  assert.equal(JSON.stringify(links).includes(f.members[0].memberId), false);
+  assert.equal(verifyCheckpoint({ checkpoint: latest, ...f.trust, previous: first }), false);
+  assert.equal(verifyCheckpoint({ checkpoint: latest, ...f.trust, previous: first, links }), true);
+  assert.equal(verifyCheckpoint({ checkpoint: latest, ...f.trust, previous: first,
+    links: [{ ...links[0], digest: id('forged-link') }] }), false);
+});
+
+test('a configured compact-link retention ceiling never silently bypasses a missing chain segment', async t => {
+  const f = await fixture(t, 0);
+  const bounded = createCheckpointPublisher({ ...f.publisherOptions, maxRetainedLinks: 2 });
+  f.disposables.push(bounded);
+  const first = bounded.publish();
+  f.advance(NOW + 60); bounded.publish();
+  f.advance(NOW + 120); bounded.publish();
+  f.advance(NOW + 180);
+  const latest = bounded.publish();
+  const remaining = bounded.links(first.epoch, latest.epoch);
+  assert.equal(remaining.length, 1); // Latest link also occupies one of the two retained slots.
+  assert.equal(verifyCheckpoint({ checkpoint: latest, ...f.trust, previous: first, links: remaining }), false);
 });
 
 test('registered proofs exclude only the independently certified sender commitment and retain lifetime replay bounds', async t => {

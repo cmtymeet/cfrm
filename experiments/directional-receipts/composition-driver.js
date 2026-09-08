@@ -40,7 +40,7 @@ export class NativeRejection extends Error {
   }
 }
 
-class NativeBridge {
+export class NativeBridge {
   constructor() {
     const executable = process.env.CMSG_RELEASE_HARNESS;
     if (!executable || !isAbsolute(executable)) throw new Error('An explicit absolute native harness path is required');
@@ -284,7 +284,8 @@ export async function compositionFixture(t) {
     const request = { senderAuthorization: authorization, senderAdmission: members[0].grant, checkpoint,
       senderBinding, blindedReceiptRequest: { blinded }, semaphoreProof };
     const visible = JSON.stringify(request);
-    assert.ok(!visible.includes(preflight.releaseNonce) && !visible.includes(members[1].memberId) &&
+    assert.ok(!visible.includes(preflight.releaseNonce) &&
+      !visible.includes(hash(Buffer.from(preflight.releaseNonce, 'base64url'))) && !visible.includes(members[1].memberId) &&
       !visible.includes(members[1].chatPublicKey) && !visible.includes(preflight.signature),
     'The sender service envelope contains no explicit recipient or private-preflight join');
     return { request, finish: async output => ({ message: b64(prepared), signature: b64(await suite.finalize(
@@ -312,6 +313,10 @@ export async function compositionFixture(t) {
     'Actual counter statements preserve the native peers and separate pending bindings');
     assert.equal(verify(null, commitBytes(s), shared.senderOperator.publicKey, Buffer.from(s.signature, 'base64url')), true);
     assert.equal(verify(null, redemptionBytes(r), shared.recipientOperator.publicKey, Buffer.from(r.signature, 'base64url')), true);
+    const senderSide = JSON.stringify([action.request, output]);
+    assert.ok(!senderSide.includes(preflight.releaseNonce) &&
+      !senderSide.includes(hash(Buffer.from(preflight.releaseNonce, 'base64url'))),
+    'Neither raw nor SHA-256 private release nonce appears in the complete sender-side service values');
   };
   // Explicit negative witnesses only: these are never accepted as evidence of
   // a counter commit. Successful release always uses untouched ledger outputs.

@@ -165,9 +165,12 @@ Actual cmsg preflight/MLS/permit integration requires separate evidence.
 The reviewed [actual-member composition harness](COMPOSITION-OUTLINE.md) specifies
 the next bounded check using two native cmsg member keys throughout enrollment,
 account authorization and actual MLS release. Its [three executable contracts](composition.test.js)
-and [Node driver](composition-driver.js) now target a deliberately rejecting
-native `prepareRelease`; they have not yet been executed. This is not additional
-passing evidence. Each case first enrolls the two actual native chat keys plus
+and [Node driver](composition-driver.js) reached all three intended rejecting
+native `prepareRelease` failures at cfrm
+`2f60fb8aabd87399d5c444569531babf909ac898`, using native cmsg
+`7395344a12a54711e84581edecd2340908db1e87`; the 38 baseline cases still passed.
+This is fail-first evidence, not a successful MLS composition. Each case first
+enrolls the two actual native chat keys plus
 15 synthetic filler members, publishes the complete qualified checkpoint, and
 generates/verifies an actual sender-excluded qualification proof. No native
 member private key or MLS payload leaves the child.
@@ -193,8 +196,21 @@ CVLD_ADMISSION_MODULE="$PWD/.dependencies/cvld/src/admission.js" CMSG_RELEASE_HA
 ```
 
 `npm test` keeps the 38-case baseline independent of the native executable.
-`npm run test:all` runs those same 38 cases plus the three composition contracts
-when both environment variables are set. JSON-lines exchanges are sequential,
+`npm run test:all` runs those same 38 cases, the three composition contracts and
+four focused bridge-process contracts when both environment variables are set.
+JSON-lines exchanges are sequential,
 bounded to 32 KiB and 30 seconds each, and raw native diagnostics are discarded.
 Each composition case has a 240-second limit. CI reports only fixed diagnostics
 and assertion outcomes. No local build, test or dependency installation was run.
+
+The [bridge-process contracts](bridge.test.js) exercise the current shutdown
+behavior with fully owned, temporary synthetic Node children. A clean final
+response/exit is the control. A nonzero exit, signal or malformed trailing output
+after that same successful response must still make shutdown fail. These four
+new cases await their own observed fail-first result before the shutdown behavior
+is fixed. They run without RSA/proof generation or a native executable, using the
+same installed packages and pinned admission-module import:
+
+```sh
+CVLD_ADMISSION_MODULE="$PWD/.dependencies/cvld/src/admission.js" npm run test:bridge --prefix experiments/directional-receipts
+```

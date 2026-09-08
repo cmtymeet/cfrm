@@ -2,9 +2,30 @@
 # credential, host configuration or paid infrastructure is provisioned here.
 when:
   - event: manual
+skip_clone: true
 steps:
+  - name: authenticated-checkout
+    image: bash
+    environment:
+      CI_SOURCE_READ_KEY:
+        from_secret: source_read_key
+    commands:
+      - |
+        set +x
+        umask 077
+        ci_checkout_temp="$(mktemp -d)"
+        trap 'rm -rf "$ci_checkout_temp"' EXIT
+        printf '%s\n' "$CI_SOURCE_READ_KEY" > "$ci_checkout_temp/key"
+        unset CI_SOURCE_READ_KEY
+        printf '%s\n' '[ssh.github.com]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$ci_checkout_temp/known_hosts"
+        export GIT_SSH_COMMAND="ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o UserKnownHostsFile=$ci_checkout_temp/known_hosts -i $ci_checkout_temp/key -p 443"
+        git init -q
+        git fetch --no-tags --depth=1 ssh://git@ssh.github.com/corbet-labs/cfrm.git "$CI_COMMIT_SHA"
+        git checkout -q --detach FETCH_HEAD
+        test "$(git rev-parse HEAD)" = "$CI_COMMIT_SHA"
   - name: numerical-and-rendezvous-tests
     image: bash
+    depends_on: [authenticated-checkout]
     commands:
       - node --version
       - npm test
@@ -20,5 +41,8 @@ steps:
     commands:
       - npm ci --prefix experiments/private-reciprocity --ignore-scripts --no-audit --no-fund
       - npm run artifacts --prefix experiments/private-reciprocity
-      - npm test --prefix experiments/private-reciprocity
-      - node --test --test-concurrency=1 experiments/private-reciprocity/enrollment.test.js
+      - |
+        ci_test_status=0
+        npm test --prefix experiments/private-reciprocity || ci_test_status=1
+        node --test --test-concurrency=1 experiments/private-reciprocity/enrollment.test.js || ci_test_status=1
+        exit "$ci_test_status"

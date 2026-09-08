@@ -18,3 +18,7 @@ jobs:
         with:
           node-version: '24'
       - run: npm test
+      - name: Seeded experiment
+        run: npm run experiment -- --json
+      - name: Parameter sweep
+        run: npm run sweep

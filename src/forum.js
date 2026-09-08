@@ -72,6 +72,14 @@ export class ForumExperiment {
     return { tokens, sent, received, approaches, activeEpochs, grantTotal };
   }
 
+  /** Member-client queues are centrally visible only inside the synthetic model. */
+  requestsFor(id) {
+    this.#member(id);
+    return [...this.#contacts.values()]
+      .filter(contact => contact.to === id && contact.status === 'pending')
+      .map(contact => ({ from: contact.from }));
+  }
+
   setOpen(id, open) {
     if (typeof open !== 'boolean') throw new TypeError('Expected boolean local choice');
     this.#member(id).open = open;

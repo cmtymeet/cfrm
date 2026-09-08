@@ -50,11 +50,13 @@ dependency installation, build or test has been performed.
 ## Test boundary
 
 The original 21 cases reached their intended stub failures on Crow at source
-`b53c9095f84e2a5056bd8adcb1403ef6e7e16c39`. This implementation still requires its
-first complete runtime validation. A twenty-second case now specifies rejection
-of a configured same-algorithm private key that does not match the advertised
-cohort modulus; it is intentionally awaiting its own demonstrated failure before
-the binding check is implemented.
+`b53c9095f84e2a5056bd8adcb1403ef6e7e16c39`. At
+`3f3f75c5e29741f4260f4b36b94c19fe4634e1d2`, all 21 original cases passed and the
+new twenty-second case failed with a missing expected rejection: a configured
+same-algorithm private key did not match the advertised cohort modulus. The
+binding check now compares the private key's public parameters through maintained
+SubtleCrypto before proof/signing work or a sender debit. The complete 22-case
+rerun remains required evidence for this correction.
 
 The cases cover actual distinct-membership proofs, own-account authorization,
 cross-connection replay, transactional fault injection, lost response recovery

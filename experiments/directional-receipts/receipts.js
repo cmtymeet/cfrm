@@ -337,8 +337,14 @@ export function createDirectionalService(options) {
   ledger.register(info);
   let pending = 0;
   let publicKeyPromise;
+  let pairedKeyPromise;
   const publicKey = () => publicKeyPromise ??= crypto.subtle.importKey('jwk', info.context.publicKey,
     { name: 'RSA-PSS', hash: 'SHA-384' }, true, ['verify']);
+  const pairedKey = () => pairedKeyPromise ??= crypto.subtle.exportKey('jwk', privateKey).then(key => {
+    // The maintained blind signer also exports its configured private key. Only
+    // compare public parameters here; no private key material enters persistence.
+    return key.n === info.context.publicKey.n && key.e === info.context.publicKey.e;
+  });
   const admitted = async grant => (await verifyAdmission({ ...admissionTrust,
     trustedPublicKey: Uint8Array.from(admissionTrust.trustedPublicKey), grant: structuredClone(grant), now: clock() })) === true;
   return {
@@ -370,6 +376,7 @@ export function createDirectionalService(options) {
           throw new Error('Issuance authorization is inactive');
         }
         if (!(await admitted(grant))) throw new Error('Current admission required');
+        if (!(await pairedKey())) throw new Error('Signing key does not match the configured cohort');
         const context = registeredAcknowledgementContext(request.checkpoint, request.senderBinding, checkpointTrust);
         if (context.senderId !== authorization.senderId) throw new Error('Sender binding changed');
         proofShape(request.semaphoreProof, context, authorization, request.checkpoint);

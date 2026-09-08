@@ -156,6 +156,18 @@ test('session deadline closes an idle connection without more requests', async t
   assert.equal(f.calls.requests.length, 0);
 });
 
+test('disconnecting peers cannot free capacity while their handler work is still pending', async t => {
+  const entered = deferred(), release = deferred();
+  const f = await serviceFixture(t, { limits: { ...limits, maxConnections: 1 },
+    owner: { async handle() { entered.resolve(); await release.promise; return frame({ challenge: { synthetic: true } }); } } });
+  const first = await connect(t, f.service.localAddress); first.write(packet(hello)); await entered.promise;
+  first.destroy(); await closed(first);
+  const excess = await connect(t, f.service.localAddress); await closed(excess);
+  release.resolve(); await delay(20);
+  const next = await connect(t, f.service.localAddress); const channel = createFramedSocket(next, limits);
+  await channel.write(hello); assert.ok(decode(await channel.read()).challenge);
+});
+
 test('disconnect, lease expiry and publication loss suppress pending handler responses', async t => {
   for (const trigger of ['disconnect', 'lease', 'publication']) {
     const entered = deferred(), release = deferred(); let now = NOW;

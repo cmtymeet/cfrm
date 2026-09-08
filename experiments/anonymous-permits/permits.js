@@ -1,5 +1,177 @@
-export async function createEpoch() { throw new Error('Not implemented'); }
-export function openLedger() { throw new Error('Not implemented'); }
-export function createIssuer() { throw new Error('Not implemented'); }
-export async function preparePermit() { throw new Error('Not implemented'); }
-export async function redeemPermit() { throw new Error('Not implemented'); }
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
+import { RSABSSA } from '@cloudflare/blindrsa-ts';
+
+const suite = RSABSSA.SHA384.PSS.Randomized();
+const hash = (bytes) => createHash('sha256').update(bytes).digest();
+const json = (value) => Buffer.from(JSON.stringify(value));
+const encode = (value) => Buffer.from(value).toString('base64url');
+const ownKeys = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) &&
+  Object.keys(value).sort().join(',') === [...keys].sort().join(',');
+function text(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9._:/-]{1,256}$/.test(value)) throw new TypeError('Invalid identifier');
+  return value;
+}
+function integer(value) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new TypeError('Invalid integer');
+  return value;
+}
+function decode(value, length) {
+  if (typeof value !== 'string' || value.length > length * 2 || !/^[A-Za-z0-9_-]+$/.test(value)) throw new TypeError('Invalid encoding');
+  const bytes = Buffer.from(value, 'base64url');
+  if (bytes.length !== length || encode(bytes) !== value) throw new TypeError('Invalid encoding');
+  return bytes;
+}
+function contextInfo(context) {
+  text(context.scope); text(context.epoch);
+  integer(context.notBefore); integer(context.expiresAt);
+  if (context.expiresAt <= context.notBefore) throw new TypeError('Invalid validity interval');
+  // The trusted epoch catalog fixes scope, lifetime and public key for all members.
+  const body = ['cfrm.contact.v1', context.scope, context.epoch, context.notBefore, context.expiresAt];
+  const domain = hash(json(body));
+  return { id: encode(domain), domain, expiresAt: context.expiresAt };
+}
+function active(context, now) {
+  integer(now);
+  return now >= context.notBefore && now < context.expiresAt;
+}
+async function verificationKey(context) {
+  return crypto.subtle.importKey('jwk', context.publicKey, { name: 'RSA-PSS', hash: 'SHA-384' }, false, ['verify']);
+}
+
+// A fresh key is generated for each scope/epoch, never separately per member.
+export async function createEpoch({ scope, epoch, notBefore, expiresAt }) {
+  contextInfo({ scope, epoch, notBefore, expiresAt });
+  const keys = await suite.generateKey({ publicExponent: Uint8Array.from([1, 0, 1]), modulusLength: 3072 });
+  const publicKey = await crypto.subtle.exportKey('jwk', keys.publicKey);
+  const publicContext = { scope, epoch, notBefore, expiresAt, publicKey };
+  return { get public() { return structuredClone(publicContext); }, privateKey: keys.privateKey };
+}
+
+export function openLedger(path) {
+  const db = new DatabaseSync(path);
+  db.exec(`PRAGMA journal_mode=WAL;
+    PRAGMA busy_timeout=5000;
+    PRAGMA foreign_keys=ON;
+    CREATE TABLE IF NOT EXISTS contexts (id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS allocations (
+      context TEXT NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
+      id TEXT NOT NULL, quota INTEGER NOT NULL, issued INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(context,id));
+    CREATE TABLE IF NOT EXISTS issuances (
+      context TEXT NOT NULL, allocation TEXT NOT NULL, request_hash TEXT NOT NULL,
+      signature TEXT NOT NULL, PRIMARY KEY(context,allocation,request_hash),
+      FOREIGN KEY(context,allocation) REFERENCES allocations(context,id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS spends (
+      context TEXT NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
+      nullifier TEXT NOT NULL, PRIMARY KEY(context,nullifier));`);
+  function transaction(action) {
+    db.exec('BEGIN IMMEDIATE');
+    try { const result = action(); db.exec('COMMIT'); return result; }
+    catch (error) { db.exec('ROLLBACK'); throw error; }
+  }
+  function register(info) {
+    db.prepare('INSERT INTO contexts(id,expires_at) VALUES (?,?) ON CONFLICT(id) DO NOTHING').run(info.id, info.expiresAt);
+  }
+  return {
+    allocate(info, allocation, quota) {
+      text(allocation); integer(quota);
+      return transaction(() => {
+        register(info);
+        const prior = db.prepare('SELECT quota FROM allocations WHERE context=? AND id=?').get(info.id, allocation);
+        if (prior) {
+          if (prior.quota !== quota) throw new Error('Allocation already fixed');
+          return;
+        }
+        db.prepare('INSERT INTO allocations(context,id,quota) VALUES (?,?,?)').run(info.id, allocation, quota);
+      });
+    },
+    prior(info, allocation, requestHash) {
+      return db.prepare('SELECT signature FROM issuances WHERE context=? AND allocation=? AND request_hash=?')
+        .get(info.id, allocation, requestHash)?.signature;
+    },
+    issue(info, allocation, requestHash, signature) {
+      return transaction(() => {
+        const prior = this.prior(info, allocation, requestHash);
+        if (prior) return prior;
+        const updated = db.prepare('UPDATE allocations SET issued=issued+1 WHERE context=? AND id=? AND issued<quota').run(info.id, allocation);
+        if (Number(updated.changes) !== 1) throw new Error('No allowance');
+        db.prepare('INSERT INTO issuances(context,allocation,request_hash,signature) VALUES (?,?,?,?)')
+          .run(info.id, allocation, requestHash, signature);
+        return signature;
+      });
+    },
+    spend(info, nullifier) {
+      return transaction(() => {
+        register(info);
+        return Number(db.prepare('INSERT INTO spends(context,nullifier) VALUES (?,?) ON CONFLICT DO NOTHING').run(info.id, nullifier).changes) === 1;
+      });
+    },
+    prune(now) { integer(now); db.prepare('DELETE FROM contexts WHERE expires_at<=?').run(now); },
+    counts() {
+      return Object.fromEntries(['allocations', 'issuances', 'spends'].map((name) => [name, db.prepare(`SELECT count(*) AS n FROM ${name}`).get().n]));
+    },
+    close() { if (db.isOpen) db.close(); },
+  };
+}
+
+export function createIssuer(epoch, ledger, clock) {
+  const context = structuredClone(epoch.public);
+  const info = contextInfo(context);
+  const privateKey = epoch.privateKey;
+  if (typeof clock !== 'function') throw new TypeError('Explicit clock required');
+  return {
+    // Trusted numerical rules call this method; it is not a client admission API.
+    allocate(allocation, quota) {
+      if (!active(context, clock())) throw new Error('Inactive epoch');
+      return ledger.allocate(info, allocation, quota);
+    },
+    async issue(allocation, request) {
+      try {
+        text(allocation);
+        if (!active(context, clock()) || !ownKeys(request, ['blinded'])) throw new Error();
+        const blinded = decode(request.blinded, 384);
+        const requestHash = encode(hash(blinded));
+        const prior = ledger.prior(info, allocation, requestHash);
+        if (prior) return { blindSignature: prior };
+        // Crypto completes before charging. The durable transaction is idempotent.
+        const signature = encode(await suite.blindSign(privateKey, blinded));
+        if (!active(context, clock())) throw new Error();
+        return { blindSignature: ledger.issue(info, allocation, requestHash, signature) };
+      } catch { throw new Error('Permit issuance rejected'); }
+    },
+  };
+}
+
+export async function preparePermit(publicContext) {
+  const context = structuredClone(publicContext);
+  const info = contextInfo(context);
+  const publicKey = await verificationKey(context);
+  const prepared = suite.prepare(Buffer.concat([info.domain, randomBytes(32)]));
+  const { blindedMsg, inv } = await suite.blind(publicKey, prepared);
+  return {
+    request: { blinded: encode(blindedMsg) },
+    async finish(response) {
+      if (!ownKeys(response, ['blindSignature'])) throw new TypeError('Invalid issuer response');
+      const blindSignature = decode(response.blindSignature, 384);
+      const signature = await suite.finalize(publicKey, prepared, blindSignature, inv);
+      return { message: encode(prepared), signature: encode(signature) };
+    },
+  };
+}
+
+export async function redeemPermit(publicContext, ledger, permit, now) {
+  try {
+    const context = structuredClone(publicContext);
+    const info = contextInfo(context);
+    if (!active(context, now) || !ownKeys(permit, ['message', 'signature'])) return false;
+    const message = decode(permit.message, 96);
+    const signature = decode(permit.signature, 384);
+    if (!timingSafeEqual(info.domain, message.subarray(32, 64))) return false;
+    const publicKey = await verificationKey(context);
+    if (!(await suite.verify(publicKey, signature, message))) return false;
+    // High-entropy nonce, not a hash of enumerable member/recipient pairs.
+    const nullifier = encode(hash(Buffer.concat([info.domain, message.subarray(64)])));
+    return ledger.spend(info, nullifier);
+  } catch { return false; }
+}

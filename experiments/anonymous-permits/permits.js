@@ -163,8 +163,10 @@ export async function preparePermit(publicContext) {
   };
 }
 
-export async function redeemPermit(publicContext, ledger, permit, now) {
+export async function redeemPermit(publicContext, ledger, permit, clock) {
   try {
+    if (typeof clock !== 'function') return false;
+    const now = clock();
     const context = structuredClone(publicContext);
     const info = contextInfo(context);
     if (!active(context, now) || !ownKeys(permit, ['message', 'signature'])) return false;

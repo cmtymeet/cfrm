@@ -32,8 +32,8 @@ test('a real blind permit redeems once without account or recipient identifiers'
   assert.deepEqual(Object.keys(client.request), ['blinded']);
   assert.deepEqual(Object.keys(permit).sort(), ['message', 'signature']);
   assert.equal(JSON.stringify(permit).includes('allocation-a'), false);
-  assert.equal(await redeemPermit(context.public, ledger, permit, NOW), true);
-  assert.equal(await redeemPermit(context.public, ledger, permit, NOW), false);
+  assert.equal(await redeemPermit(context.public, ledger, permit, () => NOW), true);
+  assert.equal(await redeemPermit(context.public, ledger, permit, () => NOW), false);
   assert.deepEqual(ledger.counts(), { allocations: 1, issuances: 1, spends: 1 });
 });
 
@@ -53,7 +53,7 @@ test('retrying an issuance returns the same response without consuming another s
   const first = await issuer.issue('allocation-a', client.request);
   const second = await issuer.issue('allocation-a', client.request);
   assert.deepEqual(first, second);
-  assert.equal(await redeemPermit(context.public, ledger, await client.finish(second), NOW), true);
+  assert.equal(await redeemPermit(context.public, ledger, await client.finish(second), () => NOW), true);
   await assert.rejects(issue(issuer, context));
 });
 
@@ -81,13 +81,13 @@ test('independent SQLite connections serialize double spending and retain it aft
   const second = openLedger(path);
   t.after(() => second.close());
   const results = await Promise.all([
-    redeemPermit(context.public, ledger, permit, NOW),
-    redeemPermit(context.public, second, permit, NOW),
+    redeemPermit(context.public, ledger, permit, () => NOW),
+    redeemPermit(context.public, second, permit, () => NOW),
   ]);
   assert.deepEqual(results.sort(), [false, true]);
   const third = openLedger(path);
   try {
-    assert.equal(await redeemPermit(context.public, third, permit, NOW), false);
+    assert.equal(await redeemPermit(context.public, third, permit, () => NOW), false);
     await assert.rejects(issue(createIssuer(context, third, () => NOW), context));
   } finally { third.close(); }
 });
@@ -96,9 +96,9 @@ test('invalid signatures cannot consume a genuine permit', async (t) => {
   const { context, issuer, ledger } = await setup(t);
   issuer.allocate('allocation-a', 1);
   const { permit } = await issue(issuer, context);
-  assert.equal(await redeemPermit(context.public, ledger, { ...permit, signature: 'AA' }, NOW), false);
-  assert.equal(await redeemPermit(context.public, ledger, { ...permit, message: 'AA' }, NOW), false);
-  assert.equal(await redeemPermit(context.public, ledger, permit, NOW), true);
+  assert.equal(await redeemPermit(context.public, ledger, { ...permit, signature: 'AA' }, () => NOW), false);
+  assert.equal(await redeemPermit(context.public, ledger, { ...permit, message: 'AA' }, () => NOW), false);
+  assert.equal(await redeemPermit(context.public, ledger, permit, () => NOW), true);
 });
 
 test('scope, epoch and validity are checked using trusted public context', async (t) => {
@@ -106,19 +106,59 @@ test('scope, epoch and validity are checked using trusted public context', async
   issuer.allocate('allocation-a', 1);
   const { permit } = await issue(issuer, context);
   for (const changes of [{ scope: 'other.example' }, { epoch: 'epoch-2' }]) {
-    assert.equal(await redeemPermit({ ...context.public, ...changes }, ledger, permit, NOW), false);
+    assert.equal(await redeemPermit({ ...context.public, ...changes }, ledger, permit, () => NOW), false);
   }
-  assert.equal(await redeemPermit(context.public, ledger, permit, NOW - 1), false);
-  assert.equal(await redeemPermit(context.public, ledger, permit, NOW + 600), false);
-  assert.equal(await redeemPermit(context.public, ledger, permit, NOW), true);
+  assert.equal(await redeemPermit(context.public, ledger, permit, () => NOW - 1), false);
+  assert.equal(await redeemPermit(context.public, ledger, permit, () => NOW + 600), false);
+  assert.equal(await redeemPermit(context.public, ledger, permit, () => NOW), true);
 });
 
 test('expired state can be pruned without accepting expired permits', async (t) => {
   const { context, issuer, ledger } = await setup(t);
   issuer.allocate('allocation-a', 1);
   const { permit } = await issue(issuer, context);
-  await redeemPermit(context.public, ledger, permit, NOW);
+  await redeemPermit(context.public, ledger, permit, () => NOW);
   ledger.prune(NOW + 600);
   assert.deepEqual(ledger.counts(), { allocations: 0, issuances: 0, spends: 0 });
-  assert.equal(await redeemPermit(context.public, ledger, permit, NOW + 600), false);
+  assert.equal(await redeemPermit(context.public, ledger, permit, () => NOW + 600), false);
+});
+
+
+test('validity is rechecked after verification before a first spend', async (t) => {
+  const { context, issuer, ledger } = await setup(t);
+  issuer.allocate('allocation-a', 1);
+  const { permit } = await issue(issuer, context);
+  let now = NOW;
+  const pending = redeemPermit(context.public, ledger, permit, () => now);
+  now = NOW + 600;
+  assert.equal(await pending, false);
+  assert.equal(ledger.counts().spends, 0);
+});
+
+test('expiry and pruning during verification cannot resurrect a spent permit', async (t) => {
+  const { context, issuer, ledger, path } = await setup(t);
+  issuer.allocate('allocation-a', 1);
+  const { permit } = await issue(issuer, context);
+  assert.equal(await redeemPermit(context.public, ledger, permit, () => NOW), true);
+  const second = openLedger(path);
+  t.after(() => second.close());
+  let now = NOW;
+  const pending = redeemPermit(context.public, ledger, permit, () => now);
+  now = NOW + 600;
+  second.prune(now);
+  assert.equal(await pending, false);
+  assert.deepEqual(ledger.counts(), { allocations: 0, issuances: 0, spends: 0 });
+});
+
+test('a distinct trusted issuer key cannot silently reuse another key allocation', async (t) => {
+  const { context, issuer, ledger } = await setup(t);
+  issuer.allocate('allocation-a', 1);
+  await issue(issuer, context);
+  const replacement = await createEpoch({ scope: 'community.example', epoch: 'epoch-1', notBefore: NOW, expiresAt: NOW + 600 });
+  const replacementIssuer = createIssuer(replacement, ledger, () => NOW);
+  replacementIssuer.allocate('allocation-a', 1);
+  const { permit } = await issue(replacementIssuer, replacement);
+  assert.equal(await redeemPermit(replacement.public, ledger, permit, () => NOW), true);
+  assert.equal(await redeemPermit(context.public, ledger, permit, () => NOW), false);
+  assert.equal(ledger.counts().allocations, 2);
 });

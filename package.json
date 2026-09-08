@@ -1,0 +1,15 @@
+{
+  "name": "cfrm",
+  "version": "0.1.0-alpha.0",
+  "private": true,
+  "description": "Deterministic experiments for live communities and numerical participation rules",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "experiment": "node experiments/run.js",
+    "sweep": "node experiments/run.js --sweep"
+  },
+  "license": "SEE LICENSE IN LICENSE.md",
+  "repository": { "type": "git", "url": "git+https://github.com/corbet-labs/cfrm.git" }
+}

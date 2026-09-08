@@ -5,6 +5,11 @@ experiment composes real Semaphore proofs and RFC 9474 blind RSA into the two
 operations proposed in [the directional accounting study](../../studies/directional-blind-receipts.md).
 It does not implement a participation controller or change cfrm's shipping APIs.
 
+The new [release-attestation tests](attestations.test.js) currently target rejecting
+stubs and have no runtime evidence yet. They leave the tested 22-case raw suite
+unchanged. `npm test` runs both suites; `npm run test:receipts` runs only the raw
+baseline and `npm run test:attestations` runs only the new specifications.
+
 `authorizeAndAcknowledge` accepts a purpose-bound, certified-key authorization
 from the named sender and a proof by another enrolled qualified identity. One
 SQLite transaction must consume the sender nonce and lifetime directed nullifier,
@@ -139,5 +144,7 @@ commit means after tentative writes but within the transaction; after commit
 means before returning a result. No hook is supplied by network clients.
 
 The next bounded proposal is [counter-backed release attestations](ATTESTATION-ACCEPTANCE.md).
-It requires a separate fail-first increment and interoperability evidence; no
-attestation API or hidden release-nonce payload is implemented by this version.
+Its first 16 executable cases cover the counter/crypto portion against stubs,
+using the same real enrollment and proof fixtures. The reference client prepares
+the hidden release-nonce payload, but the service does not implement it yet.
+Actual cmsg preflight/MLS/permit integration still requires separate evidence.

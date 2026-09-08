@@ -1,11 +1,14 @@
 # Counter-backed release attestations: next acceptance boundary
 
-**Proposed fail-first increment, not implemented or selected.** The current
+**Fail-first specifications now exist against stubs; no implementation or policy selection.** The current
 [22-case experiment](README.md) establishes the two raw directional counter
 operations. The [cmsg release proposal](https://github.com/corbet-labs/cmsg/blob/main/studies/first-contact-release-gate.md)
 adds a conditional sender-side gate. The next increment must connect actual
 counter commits to that gate's signed statements. Synthetic signatures in a
-client test do not establish this connection.
+client test do not establish this connection. The initial
+[16 executable cases](attestations.test.js) cover groups 1–7 below with actual
+cryptographic fixtures. They have not yet been run; the service currently rejects
+all operations. Groups 8–10 remain separate unimplemented composition work.
 
 Keep the existing boolean redemption API as the tested baseline until this
 increment is reviewed. An isolated release-receipt service may expose the same
@@ -60,8 +63,9 @@ Their Ed25519 signing bytes are UTF-8 JSON arrays in exactly this order:
 ]
 ```
 
-All IDs, keys, nonces and hashes use exact base64url without padding; keys, IDs,
-nonces and hashes are 32 bytes and signatures 64 bytes. Times are positive safe
+Community/cohort identifiers are nonempty text of at most 128 bytes. Policy
+digests, member IDs, keys, nonces and hashes use exact base64url without padding;
+those binary values are 32 bytes and signatures 64 bytes. Times are positive safe
 integers in the Node adapter. Reject unknown fields, alternate encodings and
 wrong purposes. Use maintained Ed25519 signing through Node crypto and the
 existing cmsg verifier; no generic signing oracle or new cryptographic circuit
@@ -114,7 +118,8 @@ current cvld admission and private preflight ownership before content release.
 
 ## Acceptance groups
 
-These are proposed executable cases, not completed evidence:
+These acceptance groups are not completed evidence. The first seven now have
+executable cases against stubs; the final three remain proposals:
 
 1. **Real counter-backed outputs.** Use actual enrolled sender-excluded
    Semaphore proofs, real cvld admission verification and maintained blind RSA.

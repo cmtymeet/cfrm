@@ -10,6 +10,7 @@
     "test:attestations": "node --test --test-concurrency=1 attestations.test.js",
     "test:composition": "node --test --test-concurrency=1 composition.test.js",
     "test:bridge": "node --test --test-concurrency=1 bridge.test.js",
+    "test:controller": "node --test --test-concurrency=1 controller-store.test.js",
     "test:all": "node --test --test-concurrency=1 receipts.test.js attestations.test.js composition.test.js bridge.test.js"
   },
   "license": "SEE LICENSE IN ../../LICENSE.md",

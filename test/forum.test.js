@@ -57,7 +57,7 @@ test('unsolicited delivery never worsens the recipient balance', () => {
   assert.equal(forum.accept('b', 'a', 1), 'accepted');
   assert.equal(forum.state('b').received, 1);
 });
-test('acceptance and first reply each count once, sender cannot forge acceptance', () => {
+test('acceptance and first reply each count once and cannot be applied in reverse', () => {
   const { forum } = fixture();
   forum.introduce('a', 'b', 1);
   assert.equal(forum.accept('a', 'b', 1), 'missing');

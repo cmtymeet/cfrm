@@ -1,4 +1,4 @@
-import { createHash, createPublicKey, timingSafeEqual, verify } from 'node:crypto';
+import { createHash, createPublicKey, sign, timingSafeEqual, verify } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { RSABSSA } from '@cloudflare/blindrsa-ts';
 import { verifyProof } from '@semaphore-protocol/proof';
@@ -40,16 +40,19 @@ function interval(value) {
 }
 const current = (value, now) => now >= value.issuedAt && now < value.expiresAt;
 
-function cohortInfo(publicInput, options) {
+function cohortInfo(publicInput, options, attestationKeys) {
   const context = structuredClone(publicInput);
   if (!exact(context, ['version', 'purpose', 'communityId', 'policyDigest', 'cohortId',
-    'notBefore', 'issueUntil', 'redeemUntil', 'publicKey']) || context.version !== 1 ||
-    context.purpose !== 'acknowledged-receive' || !positive(context.notBefore) ||
+    'notBefore', 'issueUntil', 'redeemUntil', 'publicKey']) || context.version !== (attestationKeys ? 2 : 1) ||
+    context.purpose !== (attestationKeys ? 'release-acknowledged-receive' : 'acknowledged-receive') || !positive(context.notBefore) ||
     !positive(context.issueUntil) || !positive(context.redeemUntil) ||
     context.issueUntil <= context.notBefore || context.redeemUntil <= context.issueUntil) {
     throw new TypeError('Invalid shared receipt cohort');
   }
   text(context.communityId); text(context.cohortId); decode(context.policyDigest, 32);
+  if (attestationKeys && (Buffer.byteLength(context.communityId) > 128 || Buffer.byteLength(context.cohortId) > 128)) {
+    throw new TypeError('Release context exceeds the shared client bounds');
+  }
   const key = context.publicKey;
   if (!key || key.kty !== 'RSA' || key.e !== 'AQAB' || key.alg !== 'PS384' ||
     !Array.isArray(key.key_ops) || key.key_ops.length !== 1 || key.key_ops[0] !== 'verify' ||
@@ -58,16 +61,59 @@ function cohortInfo(publicInput, options) {
   }
   const modulus = decode(key.n, 384);
   if (modulus[0] < 128 || !(modulus[383] & 1)) throw new TypeError('A 3072-bit odd RSA modulus is required');
-  const domain = hash(json(['cfrm.directional.receipt.v1', context.communityId, context.policyDigest,
+  const domain = hash(json([attestationKeys ? 'cfrm.directional.release-receipt.v1' : 'cfrm.directional.receipt.v1',
+    context.communityId, context.policyDigest,
     context.cohortId, context.notBefore, context.issueUntil, context.redeemUntil, key.kty, key.n, key.e]));
   const keyFingerprint = hash(json(['RSA', key.n, key.e]));
-  const configurationHash = hash(json(['cfrm.directional.configuration.v1', b64(domain),
+  const configuration = ['cfrm.directional.configuration.v1', b64(domain),
     options.maxAuthorizedSend, options.maxAcknowledgedReceive, options.authorizationSeconds,
-    b64(options.admissionTrust.trustedPublicKey), b64(options.checkpointTrust.trustedPublicKey)]));
+    b64(options.admissionTrust.trustedPublicKey), b64(options.checkpointTrust.trustedPublicKey)];
+  if (attestationKeys) configuration.push(attestationKeys.senderCommit.publicKey, attestationKeys.recipientRedemption.publicKey);
+  const configurationHash = hash(json(configuration));
   return { context, domain, keyFingerprint, configurationHash, community: context.communityId,
     cohort: context.cohortId, notBefore: context.notBefore, issueUntil: context.issueUntil,
     redeemUntil: context.redeemUntil, maxAuthorizedSend: options.maxAuthorizedSend,
     maxAcknowledgedReceive: options.maxAcknowledgedReceive };
+}
+
+function verifiedAttestationKeys(options) {
+  if (!exact(options.attestationKeys, ['senderCommit', 'recipientRedemption'])) {
+    throw new TypeError('Both purpose-specific attestation keys are required');
+  }
+  const result = {};
+  const used = new Set([b64(options.admissionTrust.trustedPublicKey), b64(options.checkpointTrust.trustedPublicKey)]);
+  for (const purpose of ['senderCommit', 'recipientRedemption']) {
+    const candidate = options.attestationKeys[purpose];
+    if (!exact(candidate, ['publicKey', 'privateKey']) || !(candidate.publicKey instanceof Uint8Array) ||
+      candidate.publicKey.length !== 32 || candidate.privateKey?.type !== 'private' ||
+      candidate.privateKey.asymmetricKeyType !== 'ed25519') throw new TypeError('An Ed25519 attestation key pair is required');
+    const publicKey = createPublicKey(candidate.privateKey).export({ format: 'jwk' }).x;
+    if (publicKey !== b64(candidate.publicKey) || used.has(publicKey)) {
+      throw new TypeError('Attestation keys must match their public pins and have distinct purposes');
+    }
+    used.add(publicKey);
+    result[purpose] = { publicKey, privateKey: candidate.privateKey };
+  }
+  return result;
+}
+function statementContext(info) {
+  return { communityId: info.community, policyDigest: info.context.policyDigest, cohortId: info.cohort,
+    notBefore: info.notBefore, expiresAt: info.redeemUntil };
+}
+function senderStatement(info, authorization, grant, keys) {
+  const statement = { context: statementContext(info),
+    sender: { memberId: grant.memberId, chatPublicKey: grant.chatPublicKey },
+    authorizationNonce: authorization.nonce, blindedRequestHash: authorization.requestHash };
+  const bytes = json(['cfrm.directional.commit.v1', info.community, info.context.policyDigest, info.cohort,
+    grant.memberId, grant.chatPublicKey, authorization.nonce, authorization.requestHash, info.notBefore, info.redeemUntil]);
+  return { ...statement, signature: b64(sign(null, bytes, keys.senderCommit.privateKey)) };
+}
+function recipientStatement(info, grant, releaseNonce, keys) {
+  const statement = { context: statementContext(info),
+    recipient: { memberId: grant.memberId, chatPublicKey: grant.chatPublicKey }, releaseNonce: b64(releaseNonce) };
+  const bytes = json(['cfrm.directional.redemption.v1', info.community, info.context.policyDigest, info.cohort,
+    grant.memberId, grant.chatPublicKey, b64(releaseNonce), info.notBefore, info.redeemUntil]);
+  return { ...statement, signature: b64(sign(null, bytes, keys.recipientRedemption.privateKey)) };
 }
 
 function senderBytes(value) {
@@ -160,9 +206,11 @@ export function openDirectionalLedger(path) {
       PRIMARY KEY(community,scope,nullifier)) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS directional_spends (
       community TEXT NOT NULL, cohort TEXT NOT NULL, serial BLOB NOT NULL,
-      member TEXT NOT NULL, receipt_hash BLOB NOT NULL,
+      member TEXT NOT NULL, receipt_hash BLOB NOT NULL, release_nonce BLOB, response TEXT,
       PRIMARY KEY(community,cohort,serial),
-      FOREIGN KEY(community,cohort) REFERENCES directional_cohorts(community,cohort) ON DELETE CASCADE) WITHOUT ROWID;`);
+      FOREIGN KEY(community,cohort) REFERENCES directional_cohorts(community,cohort) ON DELETE CASCADE) WITHOUT ROWID;
+    CREATE UNIQUE INDEX IF NOT EXISTS directional_release_nonce
+      ON directional_spends(community,cohort,member,release_nonce) WHERE release_nonce IS NOT NULL;`);
   const floor = () => db.prepare('SELECT floor FROM directional_clock WHERE singleton=1').get().floor;
   let lastObserved = 0;
   function transaction(action) {
@@ -266,24 +314,26 @@ export function openDirectionalLedger(path) {
         const now = time(clock);
         recoveryActive(info, now);
         if (!current(event.authorization, now) || !current(event.grant, now)) throw new Error('Receive authorization expired');
-        const prior = db.prepare('SELECT member,receipt_hash FROM directional_spends WHERE community=? AND cohort=? AND serial=?')
+        const prior = db.prepare('SELECT member,receipt_hash,response FROM directional_spends WHERE community=? AND cohort=? AND serial=?')
           .get(info.community, info.cohort, event.serial);
         if (prior) {
           if (prior.member !== event.member || !timingSafeEqual(prior.receipt_hash, event.receiptHash)) {
             throw new Error('Receipt serial is already consumed');
           }
-          return { committed: false };
+          return { committed: false, response: prior.response };
         }
+        if (event.releaseNonce && db.prepare('SELECT 1 FROM directional_spends WHERE community=? AND cohort=? AND member=? AND release_nonce=?')
+          .get(info.community, info.cohort, event.member, event.releaseNonce)) throw new Error('Release challenge already consumed');
         if (counters(info.community, info.cohort, event.member).acknowledgedReceive >= info.maxAcknowledgedReceive) {
           throw new Error('Receive cap exhausted');
         }
-        db.prepare('INSERT INTO directional_spends(community,cohort,serial,member,receipt_hash) VALUES (?,?,?,?,?)')
-          .run(info.community, info.cohort, event.serial, event.member, event.receiptHash);
+        db.prepare('INSERT INTO directional_spends(community,cohort,serial,member,receipt_hash,release_nonce,response) VALUES (?,?,?,?,?,?,?)')
+          .run(info.community, info.cohort, event.serial, event.member, event.receiptHash, event.releaseNonce ?? null, event.response ?? null);
         db.prepare(`INSERT INTO directional_counters(community,cohort,member,acknowledged_receive) VALUES (?,?,?,1)
           ON CONFLICT(community,cohort,member) DO UPDATE SET acknowledged_receive=acknowledged_receive+1`)
           .run(info.community, info.cohort, event.member);
         faultAt(fault, 'receive-before-commit');
-        return { committed: true };
+        return { committed: true, response: event.response ?? null };
       });
     },
     counters,
@@ -302,7 +352,12 @@ export function openDirectionalLedger(path) {
   };
 }
 
-export function createDirectionalService(options) {
+export function createDirectionalService(options) { return createConfiguredService(options, false); }
+
+/** Isolated experimental service; the shipping cfrm API does not expose these statements. */
+export function createReleaseReceiptService(options) { return createConfiguredService(options, true); }
+
+function createConfiguredService(options, release) {
   const { ledger, verifyAdmission, clock, fault } = options;
   if (typeof verifyAdmission !== 'function' || typeof clock !== 'function' ||
     typeof ledger?.register !== 'function' || (fault !== undefined && typeof fault !== 'function')) {
@@ -317,7 +372,8 @@ export function createDirectionalService(options) {
       throw new TypeError('Pinned admission and checkpoint signing keys are required');
     }
   }
-  const info = cohortInfo(options.cohort.public, options);
+  const attestationKeys = release ? verifiedAttestationKeys(options) : null;
+  const info = cohortInfo(options.cohort.public, options, attestationKeys);
   for (const trust of [options.admissionTrust, options.checkpointTrust]) {
     if (trust.communityId !== info.community || trust.policyDigest !== info.context.policyDigest) {
       throw new TypeError('Trust context must match the shared cohort');
@@ -347,6 +403,7 @@ export function createDirectionalService(options) {
   });
   const admitted = async grant => (await verifyAdmission({ ...admissionTrust,
     trustedPublicKey: Uint8Array.from(admissionTrust.trustedPublicKey), grant: structuredClone(grant), now: clock() })) === true;
+  const issuanceOutput = encoded => release ? JSON.parse(encoded) : { blindSignature: encoded };
   return {
     async authorizeAndAcknowledge(input) {
       let entered = false;
@@ -368,7 +425,7 @@ export function createDirectionalService(options) {
         // Exact committed recovery is authorized by the original whole request;
         // expired proof/admission is not permission to create a new counter event.
         const recovered = ledger.recover(info, event, clock);
-        if (recovered) return { blindSignature: recovered };
+        if (recovered) return issuanceOutput(recovered);
         if (pending >= maxPending) throw new Error('Pending operation capacity exhausted');
         pending++; entered = true;
         const now = clock();
@@ -383,12 +440,16 @@ export function createDirectionalService(options) {
         event.scope = scalarBytes(context.scope);
         event.nullifier = scalarBytes(request.semaphoreProof.nullifier);
         const prior = ledger.preflightIssue(info, event, clock);
-        if (prior) return { blindSignature: prior };
+        if (prior) return issuanceOutput(prior);
         if (!(await verifyProof(request.semaphoreProof))) throw new Error('Membership proof rejected');
         const signature = b64(await suite.blindSign(privateKey, blinded));
-        const result = ledger.issue(info, event, signature, clock, fault);
+        // This candidate statement is private until the transaction caches it
+        // alongside the debit. A failed commit never returns it to the caller.
+        const response = release ? JSON.stringify({ blindSignature: signature,
+          senderCommit: senderStatement(info, authorization, grant, attestationKeys) }) : signature;
+        const result = ledger.issue(info, event, response, clock, fault);
         if (result.committed) faultAt(fault, 'issue-after-commit');
-        return { blindSignature: result.response };
+        return issuanceOutput(result.response);
       } catch { throw new Error('Directional receipt issuance rejected'); }
       finally { if (entered) pending--; }
     },
@@ -402,7 +463,7 @@ export function createDirectionalService(options) {
         authorizationShape(authorization, info, true, authorizationSeconds);
         const grant = request.admission;
         grantShape(grant, info, authorization.memberId);
-        const message = decode(request.receipt.message, 128);
+        const message = decode(request.receipt.message, release ? 160 : 128);
         const signature = decode(request.receipt.signature, 384);
         const member = b64(message.subarray(64, 96));
         if (!timingSafeEqual(message.subarray(32, 64), info.domain) || member !== grant.memberId) return false;
@@ -415,10 +476,15 @@ export function createDirectionalService(options) {
         pending++; entered = true;
         if (!(await admitted(grant))) return false;
         if (!(await suite.verify(await publicKey(), signature, message))) return false;
+        const releaseNonce = release ? message.subarray(128, 160) : null;
+        // Compute a candidate, then durably cache it in the same serial/nonce/
+        // counter transaction. Recovery returns the prior key/context verbatim.
+        const response = release ? JSON.stringify({ recipientRedemption:
+          recipientStatement(info, grant, releaseNonce, attestationKeys) }) : null;
         const result = ledger.redeem(info, { authorization, grant, member,
-          serial: message.subarray(96, 128), receiptHash }, clock, fault);
+          serial: message.subarray(96, 128), receiptHash, releaseNonce, response }, clock, fault);
         if (result.committed) faultAt(fault, 'receive-after-commit');
-        return true;
+        return release ? JSON.parse(result.response) : true;
       } catch { return false; }
       finally { if (entered) pending--; }
     },

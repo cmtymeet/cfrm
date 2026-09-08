@@ -5,10 +5,13 @@ experiment composes real Semaphore proofs and RFC 9474 blind RSA into the two
 operations proposed in [the directional accounting study](../../studies/directional-blind-receipts.md).
 It does not implement a participation controller or change cfrm's shipping APIs.
 
-The new [release-attestation tests](attestations.test.js) currently target rejecting
-stubs and have no runtime evidence yet. They leave the tested 22-case raw suite
-unchanged. `npm test` runs both suites; `npm run test:receipts` runs only the raw
-baseline and `npm run test:attestations` runs only the new specifications.
+The new [release-attestation tests](attestations.test.js) reached 16 intended
+failures at `907616cde9224d1be8b2f49ac2c68f269f555fc3`, while all 22 raw cases
+passed. The candidate now implements those statements through the same internal
+verification and ledger transactions. A complete 38-case run is required before
+claiming the shared implementation is validated. `npm test` runs both suites;
+`npm run test:receipts` runs the raw baseline and `npm run test:attestations` runs
+the release-attestation cases.
 
 `authorizeAndAcknowledge` accepts a purpose-bound, certified-key authorization
 from the named sender and a proof by another enrolled qualified identity. One
@@ -24,8 +27,9 @@ boundary alone allows a recipient to omit redemption. A separate prospective
 [sender-side content release gate](https://github.com/corbet-labs/cmsg/blob/main/studies/first-contact-release-gate.md)
 may change that limitation for honest senders;
 these specifications neither select voluntary omission as final policy nor
-implement that gate. The boolean redemption result is an experimental API, not
-a frozen public contract.
+implement the complete gate. The boolean raw redemption result is an experimental
+API, not a frozen public contract. The separate release service returns signed
+counter statements; their actual cmsg integration remains unverified.
 
 ## Reproduce
 
@@ -52,6 +56,11 @@ admission fixtures do not establish a live independent factor provider.
 The lockfile combines previously pinned package entries from the two primitive
 experiments and installs successfully with remote `npm ci`. No local dependency
 installation, build or test has been performed.
+
+The SQLite schema is disposable experiment state. The release candidate adds
+cached responses and a recipient/release-nonce index to the spend table; existing
+databases from the earlier schema are not migrated. Start this version with a
+fresh experiment database. No existing database is automatically deleted.
 
 ## Test boundary
 
@@ -143,8 +152,11 @@ network adapter must also bound total workers and ingress bytes before parsing.
 commit means after tentative writes but within the transaction; after commit
 means before returning a result. No hook is supplied by network clients.
 
-The next bounded proposal is [counter-backed release attestations](ATTESTATION-ACCEPTANCE.md).
-Its first 16 executable cases cover the counter/crypto portion against stubs,
-using the same real enrollment and proof fixtures. The reference client prepares
-the hidden release-nonce payload, but the service does not implement it yet.
-Actual cmsg preflight/MLS/permit integration still requires separate evidence.
+The [counter-backed release increment](ATTESTATION-ACCEPTANCE.md) uses a distinct
+160-byte receipt format and a new RSA key shared across that release cohort, with an independently generated
+operator signing key for each statement purpose. The service caches each exact
+signed result in its corresponding debit transaction and limits one debit per
+recipient/release nonce. It preserves the first attested chat key and common
+expiry during recovery. The 16 new cases use real enrollment, proof and blind-RSA
+fixtures; their candidate implementation still awaits its green run. Actual cmsg
+preflight/MLS/permit integration requires separate evidence.

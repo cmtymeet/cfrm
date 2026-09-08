@@ -39,7 +39,7 @@ export function freezeEligibility(input) {
     throw new TypeError('Invalid explicit frozen eligibility bounds');
   }
   const members = input.members.map(member => {
-    if (!exact(member, ['memberId', 'commitment'])) throw new TypeError('Invalid eligible member');
+    if (!exact(member, ['memberId', 'commitment']) || member.commitment === '0') throw new TypeError('Invalid eligible member');
     return Object.freeze({ memberId: publicId(member.memberId), commitment: numeric(member.commitment) });
   }).sort((a, b) => a.memberId < b.memberId ? -1 : a.memberId > b.memberId ? 1 : 0);
   if (new Set(members.map(member => member.memberId)).size !== members.length ||

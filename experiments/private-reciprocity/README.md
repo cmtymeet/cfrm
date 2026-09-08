@@ -18,7 +18,7 @@ The operator sees the credited sender and a scoped opaque nullifier, plus whatev
 
 Lifetime pair uniqueness requires lifetime replay markers. This implementation stores a 32-byte scope and 32-byte nullifier per acknowledgement, plus SQLite overhead and an aggregate credit per sender scope. There is deliberately no epoch pruning of these markers. Deleting them while allowing the same identities to return would reopen credit farming. Retention ends only with a deliberate end of that community/accounting lifetime. The storage benchmark measures synthetic records separately from proof performance.
 
-The [immutable enrollment contract](ENROLLMENT.md) specifies the missing stable cvld-member-to-Semaphore binding. Its fail-first tests and stub are separate from the acknowledgement suite, so an unimplemented enrollment path cannot silently be presented as a working dependency.
+The [immutable enrollment contract](ENROLLMENT.md) specifies the stable cvld-member-to-Semaphore binding. Eleven enrollment tests failed against an explicit stub before its implementation was added. That implementation awaits execution; the independently passing acknowledgement suite does not establish enrollment correctness. `npm test` now runs both suites, and explicit `test:acknowledgement` / `test:enrollment` scripts isolate their results.
 
 A colluding qualified member can endorse a sender without receiving a message. Excluding S prevents direct self-credit only when its one stable commitment is honestly bound. Owning multiple qualified identities remains an accepted Sybil limitation. Rotating a Semaphore identity would reset its nullifiers, so commitment rotation cannot be an unauthenticated way to regain first-contact credit. Minimum set size is not a guarantee of honest anonymity: colluding or otherwise known members reduce the effective anonymity set.
 
@@ -40,6 +40,6 @@ npm test
 node storage-benchmark.js
 ```
 
-Only synthetic data enters CI. The initial [red phase](https://github.com/corbet-labs/cfrm/actions/runs/34259540769) recorded nine failing behavioral tests before implementation. Current code adds artifact-tampering coverage. Green proving results and measurements are pending a functioning CI run; no local fallback execution has occurred.
+Only synthetic data enters CI. The initial [red phase](https://github.com/corbet-labs/cfrm/actions/runs/34259540769) recorded nine failing behavioral tests before implementation. The complete acknowledgement suite subsequently passed **10/10 tests**, including altered-artifact rejection, in internal CI at source `a10bd27d4fa1cd1a50035b4d136604652511ac20`. That combined run correctly remained red because all eleven enrollment tests still exercised the stub. Proof timing and storage measurements remain to be recorded separately. No local desktop/laptop test execution occurred.
 
 Authored experiment code uses the root FSL-1.1-ALv2 license. Upstream dependency licenses remain in their packages.

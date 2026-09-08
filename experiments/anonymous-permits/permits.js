@@ -24,14 +24,20 @@ function decode(value, length) {
   // pooled backing allocation, which would verify unrelated bytes as well.
   return Uint8Array.from(bytes);
 }
-function contextInfo(context) {
+function validateContext(context) {
   text(context.scope); text(context.epoch);
   integer(context.notBefore); integer(context.expiresAt);
   if (context.expiresAt <= context.notBefore) throw new TypeError('Invalid validity interval');
+}
+function contextInfo(context) {
+  validateContext(context);
+  const key = context.publicKey;
+  if (!key || key.kty !== 'RSA' || key.e !== 'AQAB') throw new TypeError('Invalid public key');
+  decode(key.n, 384);
   // The trusted epoch catalog fixes scope, lifetime and public key for all members.
-  const body = ['cfrm.contact.v1', context.scope, context.epoch, context.notBefore, context.expiresAt];
+  const body = ['cfrm.contact.v1', context.scope, context.epoch, context.notBefore, context.expiresAt, key.kty, key.n, key.e];
   const domain = hash(json(body));
-  return { id: encode(domain), domain, expiresAt: context.expiresAt };
+  return { id: encode(domain), domain, notBefore: context.notBefore, expiresAt: context.expiresAt };
 }
 function active(context, now) {
   integer(now);
@@ -44,7 +50,7 @@ async function verificationKey(context) {
 
 // A fresh key is generated for each scope/epoch, never separately per member.
 export async function createEpoch({ scope, epoch, notBefore, expiresAt }) {
-  contextInfo({ scope, epoch, notBefore, expiresAt });
+  validateContext({ scope, epoch, notBefore, expiresAt });
   const keys = await suite.generateKey({ publicExponent: Uint8Array.from([1, 0, 1]), modulusLength: 3072 });
   const publicKey = await crypto.subtle.exportKey('jwk', keys.publicKey);
   const publicContext = { scope, epoch, notBefore, expiresAt, publicKey };
@@ -93,6 +99,9 @@ export function openLedger(path) {
       return db.prepare('SELECT signature FROM issuances WHERE context=? AND allocation=? AND request_hash=?')
         .get(info.id, allocation, requestHash)?.signature;
     },
+    hasAllowance(info, allocation) {
+      return Boolean(db.prepare('SELECT 1 FROM allocations WHERE context=? AND id=? AND issued<quota').get(info.id, allocation));
+    },
     issue(info, allocation, requestHash, signature) {
       return transaction(() => {
         const prior = this.prior(info, allocation, requestHash);
@@ -104,8 +113,11 @@ export function openLedger(path) {
         return signature;
       });
     },
-    spend(info, nullifier) {
+    spend(info, nullifier, clock) {
       return transaction(() => {
+        // Re-read trusted time after acquiring the write lock; another process
+        // may have pruned expired replay state while verification was pending.
+        if (!active(info, clock())) return false;
         register(info);
         return Number(db.prepare('INSERT INTO spends(context,nullifier) VALUES (?,?) ON CONFLICT DO NOTHING').run(info.id, nullifier).changes) === 1;
       });
@@ -137,6 +149,9 @@ export function createIssuer(epoch, ledger, clock) {
         const requestHash = encode(hash(blinded));
         const prior = ledger.prior(info, allocation, requestHash);
         if (prior) return { blindSignature: prior };
+        // Reject missing/exhausted trusted allocations before private-key work.
+        // The final transaction still handles concurrent requests atomically.
+        if (!ledger.hasAllowance(info, allocation)) throw new Error();
         // Crypto completes before charging. The durable transaction is idempotent.
         const signature = encode(await suite.blindSign(privateKey, blinded));
         if (!active(context, clock())) throw new Error();
@@ -177,6 +192,6 @@ export async function redeemPermit(publicContext, ledger, permit, clock) {
     if (!(await suite.verify(publicKey, signature, message))) return false;
     // High-entropy nonce, not a hash of enumerable member/recipient pairs.
     const nullifier = encode(hash(Buffer.concat([info.domain, message.subarray(64)])));
-    return ledger.spend(info, nullifier);
+    return ledger.spend(info, nullifier, clock);
   } catch { return false; }
 }

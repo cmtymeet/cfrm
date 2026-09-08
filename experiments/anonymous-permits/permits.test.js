@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createEpoch, openLedger, createIssuer, preparePermit, redeemPermit } from './permits.js';
+import { createEpoch, openLedger, createIssuer, preparePermit, redeemPermit, prepareRedemption, redeemIntroduction } from './permits.js';
 
 const NOW = 1_800_000_000;
 let epochPromise;
@@ -161,4 +161,51 @@ test('a distinct trusted issuer key cannot silently reuse another key allocation
   assert.equal(await redeemPermit(replacement.public, ledger, permit, () => NOW), true);
   assert.equal(await redeemPermit(context.public, ledger, permit, () => NOW), false);
   assert.equal(ledger.counts().allocations, 2);
+});
+
+test('a recipient can retry an interrupted spend with its persisted anonymous claim', async (t) => {
+  const { context, issuer, ledger, path } = await setup(t);
+  issuer.allocate('allocation-a', 1);
+  const { permit } = await issue(issuer, context);
+  const redemption = prepareRedemption(permit);
+  assert.deepEqual(Object.keys(redemption).sort(), ['claim', 'permit']);
+  assert.match(redemption.claim, /^[A-Za-z0-9_-]{43}$/);
+  assert.notEqual(redemption.claim, prepareRedemption(permit).claim);
+  // The first response may be lost; persist the client claim before this call.
+  assert.deepEqual(await redeemIntroduction(context.public, ledger, redemption, () => NOW), { accepted: true });
+  const restarted = openLedger(path);
+  try {
+    assert.deepEqual(await redeemIntroduction(context.public, restarted, JSON.parse(JSON.stringify(redemption)), () => NOW), { accepted: true });
+    assert.deepEqual(await redeemIntroduction(context.public, restarted, prepareRedemption(permit), () => NOW), { accepted: false });
+    assert.equal(await redeemPermit(context.public, restarted, permit, () => NOW), false);
+    assert.equal(restarted.counts().spends, 1);
+  } finally { restarted.close(); }
+});
+
+test('concurrent recipient claims spend once while the winning claim stays idempotent', async (t) => {
+  const { context, issuer, ledger } = await setup(t);
+  issuer.allocate('allocation-a', 1);
+  const { permit } = await issue(issuer, context);
+  const claims = [prepareRedemption(permit), prepareRedemption(permit)];
+  const results = await Promise.all(claims.map(claim => redeemIntroduction(context.public, ledger, claim, () => NOW)));
+  assert.equal(results.filter(result => result.accepted).length, 1);
+  const winner = results.findIndex(result => result.accepted);
+  assert.deepEqual(await redeemIntroduction(context.public, ledger, claims[winner], () => NOW), { accepted: true });
+  assert.equal(ledger.counts().spends, 1);
+});
+
+test('invalid or expired redemption claims cannot consume or resurrect permits', async (t) => {
+  const { context, issuer, ledger } = await setup(t);
+  issuer.allocate('allocation-a', 1);
+  const { permit } = await issue(issuer, context);
+  const redemption = prepareRedemption(permit);
+  for (const invalid of [{ ...redemption, claim: 'AA' }, { ...redemption, memberId: 'unexpected' },
+    { ...redemption, permit: { ...permit, signature: 'AA' } }]) {
+    assert.deepEqual(await redeemIntroduction(context.public, ledger, invalid, () => NOW), { accepted: false });
+  }
+  assert.equal(ledger.counts().spends, 0);
+  assert.deepEqual(await redeemIntroduction(context.public, ledger, redemption, () => NOW), { accepted: true });
+  ledger.prune(NOW + 600);
+  assert.deepEqual(await redeemIntroduction(context.public, ledger, redemption, () => NOW + 600), { accepted: false });
+  assert.equal(ledger.counts().spends, 0);
 });

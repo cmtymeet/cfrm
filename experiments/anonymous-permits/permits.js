@@ -195,3 +195,10 @@ export async function redeemPermit(publicContext, ledger, permit, clock) {
     return ledger.spend(info, nullifier, clock);
   } catch { return false; }
 }
+
+export function prepareRedemption() {
+  throw new Error('Recipient retry specification precedes implementation');
+}
+export async function redeemIntroduction() {
+  throw new Error('Recipient retry specification precedes implementation');
+}

@@ -209,12 +209,15 @@ response/exit is the control. A nonzero exit, signal or malformed trailing outpu
 after that same successful response must still make shutdown fail. These four
 new cases produced the expected fail-first result at
 `0ca6601d9a82b8b1de70b8899f234b3c43943eca`: the clean control passed and all three
-terminal-failure cases failed with a missing expected rejection. The candidate
-fix retains the actual exit status and any late protocol failure, awaits the
+terminal-failure cases failed with a missing expected rejection (Crow 9/19:
+1 pass, 3 failures). All four cases pass at
+`51e2df53e475cd57c5c481a9cac237421ac8e890` (Crow 9/20: 4 passes, 0 failures).
+The fix retains the actual exit status and any late protocol failure, awaits the
 owned child's closure, and shares the same result with repeated shutdown calls.
 After a one-second graceful shutdown deadline it force-terminates the exact
-owned child and still waits for closure before cleanup. This candidate awaits
-validation. The process contracts run without RSA/proof generation or a native executable, using the
+owned child and still waits for closure before cleanup. This focused result
+establishes the process boundary only; the complete native MLS composition
+remains unverified. The process contracts run without RSA/proof generation or a native executable, using the
 same installed packages and pinned admission-module import:
 
 ```sh

@@ -1,6 +1,6 @@
 # Directional receipt composition experiment
 
-**Fail-first specifications against stubs; unimplemented and unselected.** This
+**Experimental implementation under runtime validation; unselected.** This
 experiment composes real Semaphore proofs and RFC 9474 blind RSA into the two
 operations proposed in [the directional accounting study](../../studies/directional-blind-receipts.md).
 It does not implement a participation controller or change cfrm's shipping APIs.
@@ -49,7 +49,14 @@ dependency installation, build or test has been performed.
 
 ## Test boundary
 
-The 21 cases cover actual distinct-membership proofs, own-account authorization,
+The original 21 cases reached their intended stub failures on Crow at source
+`b53c9095f84e2a5056bd8adcb1403ef6e7e16c39`. This implementation still requires its
+first complete runtime validation. A twenty-second case now specifies rejection
+of a configured same-algorithm private key that does not match the advertised
+cohort modulus; it is intentionally awaiting its own demonstrated failure before
+the binding check is implemented.
+
+The cases cover actual distinct-membership proofs, own-account authorization,
 cross-connection replay, transactional fault injection, lost response recovery
 after checkpoint expiry, lifetime scopes across cohort keys, honest reverse
 actions, delayed/omitted receive recording, expiry and durable pruning floors,
@@ -105,9 +112,21 @@ is not an exact retry and cannot consume its nullifier. New acceptance requires
 current sender admission and checkpoint, valid proof and own signature; final
 transaction checks repeat time and quota checks after asynchronous verification.
 The trusted ledger retains nonce/request/response recovery data until cohort
-retirement, serial spends until expiry, bounded per-account cohort counters, a
-durable time/retirement floor and lifetime directed nullifiers. Pruning does not
-erase those lifetime nullifiers or make old cohorts acceptable after rollback.
+retirement, serial spends until expiry, and per-account cohort counters until
+cohort retirement. It also retains a durable time/retirement floor, lifetime
+directed nullifiers, and signing-key/configuration fingerprints. Pruning does not
+erase those lifetime markers or make old cohorts acceptable after rollback. Key
+reuse detection covers contexts registered in this ledger; independent systems
+must separately configure different purpose keys.
+
+Exact recovery compares the complete structurally canonicalized request: object
+key ordering is immaterial, but changing the proof is not an identical retry.
+Receive retries still require a current admission and a current receipt-specific
+owner signature. If that short authorization expired, the owner may freshly sign
+for the same receipt while its shared cohort remains open; no second counter
+increment follows. This bool result does not provide a cached signed release
+attestation. Pending operation limits apply per service instance, so a future
+network adapter must also bound total workers and ingress bytes before parsing.
 
 `fault` is a trusted test-only synchronous hook at `issue-before-commit`,
 `issue-after-commit`, `receive-before-commit` and `receive-after-commit`. Before

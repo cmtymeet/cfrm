@@ -311,6 +311,31 @@ test('a cohort cannot reuse another registered cohort signing key or silently ra
   assert.deepEqual(s.count(0), counters(1, 0));
 });
 
+test('a wrong same-algorithm private key rejects before any sender debit or lifetime nullifier consumption', async t => {
+  const f = await fixture(t);
+  const wrong = open(t, f, { cohort: { public: f.cohort.public, privateKey: f.alternateKeys.privateKey } });
+  const alternate = await crypto.subtle.exportKey('jwk', f.alternateKeys.publicKey);
+  const modulus = BigInt('0x' + Buffer.from(alternate.n, 'base64url').toString('hex'));
+  let client;
+  // Avoid an accidental RSA range rejection masking the missing public/private
+  // binding: this valid honest blind request is also in the wrong key's range.
+  for (let attempt = 0; attempt < 64; attempt++) {
+    const candidate = await f.prepare();
+    if (BigInt('0x' + Buffer.from(candidate.request.blinded, 'base64url').toString('hex')) < modulus) {
+      client = candidate;
+      break;
+    }
+  }
+  assert.ok(client, 'A bounded honest blind request must be in both modulus ranges');
+  const action = await f.action(0, 1, 1, { client });
+  await rejected(wrong.service, action.request);
+  assert.deepEqual(wrong.count(0), counters());
+  assert.equal(wrong.ledger.counts().lifetimeNullifiers, 0);
+  const correct = open(t, f);
+  const { receipt } = await issued(correct.service, action);
+  assert.equal(await correct.service.redeemAcknowledgedReceipt(f.redemption(receipt)), true);
+});
+
 test('an exhausted receive cap rejects the next receipt without consuming it or creating allowance', async t => {
   const f = await fixture(t);
   const s = open(t, f, { maxAcknowledgedReceive: 1 });

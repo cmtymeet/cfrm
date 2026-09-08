@@ -6,7 +6,17 @@ This is a bounded contract and adversarial specification. The enrollment impleme
 
 One stable community member ID may have one immutable Semaphore commitment. Different member IDs cannot share a commitment within a community. A second passkey or a changed certified chat key may authenticate the same binding; neither operation may rotate it. Otherwise lifetime acknowledgement nullifiers would reset.
 
-The candidate client derivation uses the **stable random cvld wallet root**, not a passkey-specific PRF result or a chat signing key. HKDF-SHA256 derives 32 bytes with the community as a separated scope and a fixed `cfrm.semaphore.identity.v1` label; those bytes initialize the existing Semaphore `Identity` implementation. Restoring or rewrapping the same encrypted wallet must reproduce the same commitment. The exact HKDF salt/info encoding and cross-runtime vectors must be fixed before implementation. Losing that root requires restoring the same encrypted wallet; silently enrolling a replacement commitment is forbidden.
+The client derivation uses the **stable random cvld wallet root**, not a passkey-specific PRF result or a chat signing key. The version-one encoding is:
+
+```text
+IKM  = walletRoot                         # exactly 32 random bytes
+salt = UTF8("cfrm.semaphore.wallet.v1")
+info = UTF8(JSON.stringify(["cfrm.semaphore.identity.v1", communityId]))
+seed = HKDF-SHA256(IKM, salt, info, 32)    # bytes, never a hexadecimal string
+identity = new Identity(seed)
+```
+
+The community follows the existing canonical ASCII scope grammar; there is no environment, deployment host, current time, passkey ID or chat key in the derivation. Restoring or rewrapping the same encrypted wallet must reproduce the same commitment. Cross-runtime vectors remain to be executed before claiming portable compatibility. Losing that root requires restoring the same encrypted wallet; silently enrolling a replacement commitment is forbidden.
 
 The durable enrollment store contains only `(communityId, memberId, commitment)` plus indexes. It contains no profile, network endpoint, current-presence flag, passkey, phone number, payment detail or behavioral ban. This mapping enables a qualified eligibility snapshot; snapshot publication and completeness remain separate.
 
@@ -35,3 +45,7 @@ The inspected EdDSA-Poseidon verifier checks curve membership and a cofactored s
 The neutral-point equation concern is source-derived and encoded as a regression. It is not a claim of a tested deployed vulnerability or a defect in every use of the upstream API. The underlying library and circuit remain responsible for their own documented cryptographic behavior; this wrapper must enforce the assumptions of its enrollment use.
 
 Replay and expiry must be checked at atomic insertion, with independent SQLite connections unable to replace the committed mapping. Failed signatures must not reserve the binding. A valid fresh request for the existing binding is idempotent; a consumed challenge is not reusable. Current tests specify these behaviors, restoration and community separation, copied keys, replacement attempts, duplicate commitments, neutral/torsion points and malformed encodings.
+
+The prepared service uses opaque consumed-challenge hashes and a per-community clock floor in addition to the immutable bindings. These are replay/validity controls, not member activity histories. The floor prevents a restarted process with a rolled-back clock from reviving pruned challenges. Expired hashes can be removed while the floor persists. A process-local challenge-authentication key is replaced on restart, invalidating unfinished challenges.
+
+Signed eligibility publication is a separate [checkpoint contract](SNAPSHOTS.md). Enrollment by itself does not assert that a credential remains eligible forever.

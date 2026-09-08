@@ -67,12 +67,14 @@ test('bridge shutdown accepts a clean exit after its final successful response',
   const bridge = ownedBridge(t, 'clean');
   await finalSuccess(bridge);
   await bridge.close();
+  await bridge.close();
 });
 
 test('bridge shutdown rejects a nonzero child exit after its final successful response', options, async t => {
   const bridge = ownedBridge(t, 'nonzero');
   await finalSuccess(bridge);
   await assert.rejects(bridge.close(), 'A final response does not override the child failure');
+  await assert.rejects(bridge.close(), 'Repeated cleanup preserves the same terminal failure');
 });
 
 test('bridge shutdown rejects a child signal after its final successful response', options, async t => {

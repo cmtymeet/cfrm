@@ -207,8 +207,14 @@ The [bridge-process contracts](bridge.test.js) exercise the current shutdown
 behavior with fully owned, temporary synthetic Node children. A clean final
 response/exit is the control. A nonzero exit, signal or malformed trailing output
 after that same successful response must still make shutdown fail. These four
-new cases await their own observed fail-first result before the shutdown behavior
-is fixed. They run without RSA/proof generation or a native executable, using the
+new cases produced the expected fail-first result at
+`0ca6601d9a82b8b1de70b8899f234b3c43943eca`: the clean control passed and all three
+terminal-failure cases failed with a missing expected rejection. The candidate
+fix retains the actual exit status and any late protocol failure, awaits the
+owned child's closure, and shares the same result with repeated shutdown calls.
+After a one-second graceful shutdown deadline it force-terminates the exact
+owned child and still waits for closure before cleanup. This candidate awaits
+validation. The process contracts run without RSA/proof generation or a native executable, using the
 same installed packages and pinned admission-module import:
 
 ```sh

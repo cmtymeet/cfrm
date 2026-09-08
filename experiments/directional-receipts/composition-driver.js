@@ -50,7 +50,9 @@ export class NativeBridge {
     this.failure = undefined;
     this.closed = false;
     this.child = spawn(executable, [], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: { RUST_BACKTRACE: '0' } });
-    this.exited = new Promise(resolve => { this.child.once('close', resolve); });
+    this.exited = new Promise(resolve => {
+      this.child.once('close', (code, signal) => resolve({ code, signal }));
+    });
     this.child.on('error', () => this.fail('Native harness could not start'));
     this.child.stdin.on('error', () => this.fail('Native harness input failed'));
     this.child.stdout.on('data', chunk => this.read(chunk));
@@ -97,7 +99,7 @@ export class NativeBridge {
     else pending.reject(new NativeRejection(pending.op, response.error));
   }
   call(op, args) {
-    if (this.failure || this.closed) return Promise.reject(this.failure ?? new Error('Native harness is closed'));
+    if (this.failure || this.closed || this.closing) return Promise.reject(this.failure ?? new Error('Native harness is closed'));
     if (this.pending) return Promise.reject(new Error('Native harness requires sequential requests'));
     const id = ++this.sequence;
     const line = Buffer.from(JSON.stringify({ id, op, args }) + '\n');
@@ -108,14 +110,28 @@ export class NativeBridge {
       this.child.stdin.write(line);
     });
   }
-  async close() {
+  close() {
+    // Share the same terminal result with concurrent/repeated cleanup callers.
+    return this.closing ??= this.shutdown();
+  }
+  async shutdown() {
     if (this.pending) this.fail('Native harness closed with an unfinished request');
     this.child.stdin.end();
     let timer;
     const graceful = await Promise.race([this.exited.then(() => true),
       new Promise(resolve => { timer = setTimeout(() => resolve(false), 1000); })]);
     clearTimeout(timer);
-    if (!graceful) { this.child.kill('SIGKILL'); await this.exited; }
+    if (!graceful) {
+      this.failure ??= new Error('Native harness exceeded its shutdown deadline');
+      this.child.kill('SIGKILL');
+    }
+    // Wait for actual child/stdio closure before disposing its owned files.
+    // A final successful RPC cannot override a later exit or protocol failure.
+    const terminal = await this.exited;
+    if (terminal.code !== 0 || terminal.signal !== null) {
+      this.failure ??= new Error('Native harness terminated unsuccessfully');
+    }
+    if (this.failure) throw this.failure;
   }
 }
 

@@ -142,8 +142,9 @@ export function createRendezvous(options) {
 
   return {
     async begin(grantInput, routeInput) {
+      grantShape(grantInput);
       const grant = structuredClone(grantInput);
-      const route = endpoint(structuredClone(routeInput));
+      const route = endpoint(routeInput);
       if (!(await admitted(grant, current()))) throw new Error('Admission rejected');
       const now = current();
       if (now < grant.issuedAt || now >= grant.expiresAt) throw new Error('Admission expired');
@@ -155,6 +156,10 @@ export function createRendezvous(options) {
     async register(input) {
       try {
         if (!exact(input, ['grant', 'challenge', 'authenticator', 'signature'])) return null;
+        grantShape(input.grant);
+        rendezvousBytes(input.challenge);
+        bytes(input.authenticator, 32);
+        bytes(input.signature, 64);
         const { grant, challenge, authenticator, signature } = structuredClone(input);
         const payload = rendezvousBytes(challenge);
         const now = current();

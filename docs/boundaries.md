@@ -8,7 +8,7 @@ A participant has a stable, authenticated platform ID for counterparts in the co
 
 Presence is a lease with a bounded expiry, removed immediately on a clean disconnect and after missed renewal on an abrupt loss. A mobile client may suspend, lose its network or change its route. It must resume the same durable accounting state after reconnecting; continuous background execution is not assumed. Node is a test runtime, not a requirement on Android or iOS clients. Cross-component inputs must remain portable bytes and JSON.
 
-Profiles stay with members. The experiment stores no profile text, pictures, IP addresses or network endpoints. It models a roster of synthetic connected identifiers, not actual discovery transport. Peer discovery must not expose a member's network IP to malicious counterparts. No direct-network fallback or sender-controlled URL fetch is implemented or authorized by this simulator.
+Profiles stay with members. The rule experiment stores no profile text, pictures, IP addresses or network endpoints. The separate [real rendezvous library](../studies/rendezvous.md) verifies cvld certificates and signed chat-key challenges, retaining only live IDs, checksum-validated onion routes and bounded ephemeral session/replay state. It performs no network connection or content fetch. Peer discovery must not expose a member's network IP to malicious counterparts. No direct-network fallback or sender-controlled URL fetch is implemented or authorized by these libraries.
 
 | Information | Intended holder | Experiment representation |
 |---|---|---|

@@ -226,3 +226,26 @@ test('invalid limits and backward clocks fail closed; close removes all in-memor
   assert.equal(timers.size, 0);
   await assert.rejects(register());
 });
+
+test('expiry during an asynchronous verifier cannot commit stale registration', async t => {
+  let advance;
+  let expireDuringVerification = false;
+  const f = fixture(t, { verifyAdmission: async args => {
+    const accepted = admissionVerifier(args);
+    if (expireDuringVerification) advance(NOW + 5);
+    return accepted;
+  } });
+  advance = f.advance;
+  const candidate = await f.proof();
+  expireDuringVerification = true;
+  assert.equal(await f.registry.register(candidate), null);
+  assert.deepEqual(f.registry.counts(), { members: 0, sessions: 0, replayMarkers: 0 });
+});
+test('the live lease cannot outlast a short-lived admission certificate', async t => {
+  const { registry, alice, certify, register, advance } = fixture(t);
+  const session = await register(alice, certify(alice, undefined, { expiresAt: NOW + 2 }));
+  assert.equal(session.expiresAt, NOW + 2);
+  advance(NOW + 2);
+  assert.throws(() => registry.list(session.token));
+  assert.equal(registry.counts().members, 0);
+});

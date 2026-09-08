@@ -209,3 +209,19 @@ test('invalid or expired redemption claims cannot consume or resurrect permits',
   assert.deepEqual(await redeemIntroduction(context.public, ledger, redemption, () => NOW + 600), { accepted: false });
   assert.equal(ledger.counts().spends, 0);
 });
+
+test('pruned epochs stay retired after restart even if the host wall clock moves backwards', async (t) => {
+  const { context, issuer, ledger, path } = await setup(t);
+  issuer.allocate('allocation-a', 1);
+  const { permit } = await issue(issuer, context);
+  const redemption = prepareRedemption(permit);
+  assert.deepEqual(await redeemIntroduction(context.public, ledger, redemption, () => NOW), { accepted: true });
+  ledger.prune(NOW + 600);
+  const restarted = openLedger(path);
+  try {
+    assert.deepEqual(await redeemIntroduction(context.public, restarted, redemption, () => NOW), { accepted: false });
+    assert.equal(await redeemPermit(context.public, restarted, permit, () => NOW), false);
+    assert.throws(() => createIssuer(context, restarted, () => NOW).allocate('allocation-a', 1));
+    assert.equal(restarted.counts().spends, 0);
+  } finally { restarted.close(); }
+});

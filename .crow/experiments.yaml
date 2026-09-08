@@ -1,0 +1,22 @@
+# Optional manual execution on an existing trusted Crow worker. No service,
+# credential, host configuration or paid infrastructure is provisioned here.
+when:
+  - event: manual
+steps:
+  - name: numerical-and-rendezvous-tests
+    image: bash
+    commands:
+      - node --version
+      - npm test
+  - name: anonymous-permit-tests
+    image: bash
+    depends_on: [numerical-and-rendezvous-tests]
+    commands:
+      - npm ci --prefix experiments/anonymous-permits --ignore-scripts --no-audit --no-fund
+      - npm test --prefix experiments/anonymous-permits
+  - name: private-acknowledgement-tests
+    image: bash
+    depends_on: [anonymous-permit-tests]
+    commands:
+      - npm ci --prefix experiments/private-reciprocity --ignore-scripts --no-audit --no-fund
+      - npm test --prefix experiments/private-reciprocity

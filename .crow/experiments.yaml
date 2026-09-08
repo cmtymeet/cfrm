@@ -19,4 +19,6 @@ steps:
     depends_on: [anonymous-permit-tests]
     commands:
       - npm ci --prefix experiments/private-reciprocity --ignore-scripts --no-audit --no-fund
+      - npm run artifacts --prefix experiments/private-reciprocity
       - npm test --prefix experiments/private-reciprocity
+      - node --test --test-concurrency=1 experiments/private-reciprocity/enrollment.test.js

@@ -1,19 +1,25 @@
-# Counter-backed release attestations: next acceptance boundary
+# Counter-backed release attestations: acceptance boundaries
 
-**Counter-backed statement implementation is tested; no policy selection.** The current
+**Counter-backed statements and bounded native release composition are tested; no policy selection.** The current
 [22-case experiment](README.md) establishes the two raw directional counter
 operations. The [cmsg release proposal](https://github.com/corbet-labs/cmsg/blob/main/studies/first-contact-release-gate.md)
-adds a conditional sender-side gate. The next increment must connect actual
-counter commits to that gate's signed statements. Synthetic signatures in a
-client test do not establish this connection. The initial
+adds a conditional sender-side gate. Actual counter commits must connect to that
+gate's signed statements; synthetic signatures alone do not establish this
+connection. The initial
 [16 executable cases](attestations.test.js) cover groups 1–7 below with actual
 cryptographic fixtures. All 16 reached the intended stub failures at
 `907616cde9224d1be8b2f49ac2c68f269f555fc3`, alongside 22 passing raw cases. The
 implementation shares the original atomic ledger and passes all 38 cases at
 `fdf739e3fdc40aedbc61a552d41b9fc83623f8b4`: the unchanged 22 raw cases plus the
 16 release cases. This includes independent Node verification of the exact cmsg
-canonical arrays, not a Rust/MLS round trip. Groups 8–10 remain separate
-unimplemented composition work.
+canonical arrays. The additional [three composition cases](composition.test.js)
+now establish the core same-member MLS release, substitution/retry and local
+encrypted-restore portion of group 8. They reached three intended stub failures
+in Crow 9/18, then passed with all 38 baseline and four process cases in Crow
+9/21 at cfrm `82f824c1d26e37d89f946728dab98b36a76612b1` and native cmsg
+`7c6740369cf17779c2b749547adfbca92b899f34`: 45 passes, 0 failures. See the
+[complete source pins and scope](README.md). Groups 9–10 and durable crash/
+rollback recovery remain separate composition work.
 
 The boolean redemption API remains the tested raw baseline. The isolated
 release-receipt service exposes the same two operation names with the structured
@@ -124,8 +130,9 @@ current cvld admission and private preflight ownership before content release.
 ## Acceptance groups
 
 The first seven acceptance groups have real stub-failure evidence followed by
-passing implementation tests. The final three remain unverified composition
-proposals:
+passing implementation tests. Group 8 has the bounded actual-member evidence
+described above; the remaining consent/fairness and first-contact/group
+composition in groups 9–10 is unverified:
 
 1. **Real counter-backed outputs.** Use actual enrolled sender-excluded
    Semaphore proofs, real cvld admission verification and maintained blind RSA.
@@ -195,19 +202,21 @@ proposals:
 
 ## Dependencies before integration
 
-The first implementation increment can cover groups 1–7 with actual counter
-crypto and exact canonical fixture outputs. Group 8 requires the cmsg client
-gate's own green tests plus narrow certified-key signing adapters for the private
-preflight and these purpose-bound account authorizations. Do not add a generic
-private-key export merely to manufacture an interoperability fixture. The full
-flow must use the same certified counterparts in cfrm and MLS.
+Groups 1–7 use actual counter crypto and exact canonical outputs. The bounded
+group-8 composition followed the cmsg gate's passing tests and its narrow
+certified-key signers for enrollment, private preflight and account authorizations.
+It uses the same certified counterparts in cfrm and MLS, without generic
+private-key export or replacement Node chat keys. Its Node driver spans synthetic
+holder/operator roles and the native child owns both peers for the test; neither
+arrangement establishes deployed peer or operator isolation.
 
 Groups 9–10 need the consent, local block and first-contact state boundaries to
 be joined with the real client paths. Until those paths run, document them as
 unverified composition work. Existing Tor routing and no-direct-fallback rules
 still apply; an in-process crypto test cannot establish network anonymity.
 
-Client-owned encrypted blind preparation, pending release recovery and concurrent
-writer/old-snapshot handling remain necessary. A fresh nonce alone is not a
+Client-owned encrypted blind preparation, durable pending recovery and concurrent
+writer/old-snapshot handling remain necessary. The tested encrypted pending
+restore happens within one child; a fresh nonce alone is not a
 durable rollback solution. No participation controller, compulsory read counter
 or final policy decision follows from passing this attestation increment.

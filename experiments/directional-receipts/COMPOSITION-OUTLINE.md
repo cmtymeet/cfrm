@@ -1,13 +1,16 @@
-# Actual-member release composition: proposed harness
+# Actual-member release composition: reviewed harness outline
 
-**Design only; no executable composition or new API is established here.** The
-38 directional/attestation cases pass at
-`fdf739e3fdc40aedbc61a552d41b9fc83623f8b4`. The cmsg release gate separately passes
-with actual MLS and synthetic attestations. This outline specifies the next
-bounded check for [acceptance group 8](ATTESTATION-ACCEPTANCE.md): real cfrm counter
-statements must unlock actual MLS material for the **same two certified members**
-whose chat keys authorized enrollment and accounting. Root review and a new
-observed stub failure must precede implementation.
+**Reviewed design, now implemented and tested within the stated harness scope.**
+This outline is retained as the accepted protocol plan for the
+[three executable composition cases](composition.test.js). They reached the
+intended native stub in Crow 9/18 after actual enrollment/proof verification, then
+passed in the full 45-case run at cfrm
+`82f824c1d26e37d89f946728dab98b36a76612b1`, native cmsg
+`7c6740369cf17779c2b749547adfbca92b899f34` (Crow 9/21). See the
+[evidence and exact dependency pins](README.md). The bounded portion of
+[acceptance group 8](ATTESTATION-ACCEPTANCE.md) uses actual cfrm counter statements
+to unlock MLS material for the **same two certified members** whose chat keys
+authorized enrollment and accounting. It adds no production API or final policy.
 
 ## Processes and trust boundaries
 
@@ -65,9 +68,9 @@ initializer that manufactures 17 chat keys. Reuse the existing `ffjavascript`
 curve setup/termination pattern so a proof worker cannot keep the child test
 process alive after completion.
 
-Before composition is implemented, require separate passing evidence for cmsg's
-typed release authorizations/private preflight and narrow enrollment signer.
-Their presence in source alone is insufficient. The already-tested experimental
+Composition followed separate passing evidence for cmsg's typed release
+authorizations/private preflight and narrow enrollment signer. Their presence
+in source alone was insufficient. The already-tested experimental
 `PendingRelease` gate does not supply those `Member` signatures itself.
 
 ## Proposed JSON-lines exchange
@@ -86,6 +89,7 @@ codes. One request is outstanding at a time. Actor handles are the fixed strings
 | `authorizeSend` | Actual base64url 384-byte blinded request and short authorization expiry | Hash actual bytes inside the child; bind through `PendingRelease.bind_request`; use its independently generated authorization nonce with S's `authorize_release_send`. Return the account authorization, without private preflight or release nonce. |
 | `authorizeReceive` | Exact `{ message, signature }` receipt and short authorization expiry | Use R's retained verified private release nonce, current grant and a fresh independent receive-authorization nonce with `authorize_release_receive`. Return only the named R account authorization. |
 | `finishRelease` | Actual `senderCommit` and `recipientRedemption` from the ledgers | Check pinned operator keys and exact pending context/peers/nonces/hash; release retained material, join and decrypt using R. Return coarse gate/decryption/authenticated-sender/expected-text results, never text or MLS bytes. |
+| `restorePending` | Empty object | The reviewed eighth verb seals/restores the bound pending state inside the child before its first join. Return only restored/not-joined outcomes; wrapping material and encrypted snapshots stay inside the child. |
 
 The receipt's message and signature retain their exact base64url encoding; the
 native receiver adapter computes the canonical envelope hash itself. The sender
@@ -110,7 +114,7 @@ diagnostics and final CI output contain only coarse assertions, never raw
 envelopes. On cleanup, stop only the exact child process created by the test.
 Do not mask a failure by switching to fixture keys or a simulated child.
 
-## First successful run
+## Successful run
 
 1. Generate two independent synthetic wallet identities in the driver's holder
    role and 15 filler identities. Supply only the two expected commitments to
@@ -148,11 +152,12 @@ This run proves the connection between the actual accounting keys and MLS peers.
 It does not prove that R's receipt originated from this particular S issuance:
 the explicitly permitted pooling/provenance limitation remains unchanged.
 
-## Proposed fail-first cases and deferred scope
+## Fail-first cases and deferred scope
 
-Start with a small executable composition suite against a rejecting harness
-operation, after all real prerequisites run. Preserve the existing 38 cases in
-the same CI boundary. Suggested independent cases are:
+The small executable suite reached a rejecting harness operation after all real
+prerequisites ran, before native release implementation. The passing combined
+run preserves the existing 38 cases and the four process contracts. Its three
+independent composition cases are:
 
 - The complete run above, with withholding before either required statement and
   actual authenticated decryption only after both real counter commits.

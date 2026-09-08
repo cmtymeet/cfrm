@@ -13,6 +13,15 @@ cases using the same internal verification and ledger transactions. `npm test` r
 `npm run test:receipts` runs the raw baseline and `npm run test:attestations` runs
 the release-attestation cases.
 
+The combined run now passes **45 cases** at cfrm
+`82f824c1d26e37d89f946728dab98b36a76612b1`, using native cmsg
+`7c6740369cf17779c2b749547adfbca92b899f34` and cvld
+`c416d9edd6f7f7259d84b88838b8e607b2166671` (Crow 9/21): the same 38 baseline
+cases, four bridge-process cases and three actual counter/MLS composition cases.
+The native source checks, locked build and formatting check also passed. The
+composition uses the same two actual native member keys throughout enrollment,
+account authorization and authenticated MLS release; its scope is detailed below.
+
 `authorizeAndAcknowledge` accepts a purpose-bound, certified-key authorization
 from the named sender and a proof by another enrolled qualified identity. One
 SQLite transaction must consume the sender nonce and lifetime directed nullifier,
@@ -23,13 +32,14 @@ and consumes the receipt exactly once. Successful identical redemption retries
 return `true`, including after restart, without another counter increment.
 
 Neither counter proves text delivery, reading or sincere conversation. This
-boundary alone allows a recipient to omit redemption. A separate prospective
+boundary alone allows a recipient to omit redemption. The separately tested
 [sender-side content release gate](https://github.com/corbet-labs/cmsg/blob/main/studies/first-contact-release-gate.md)
-may change that limitation for honest senders;
-these specifications neither select voluntary omission as final policy nor
-implement the complete gate. The boolean raw redemption result is an experimental
+withholds the honest sender's first MLS content until both actual counter
+statements verify. This conditional result neither proves reading nor enforces a
+dishonest sender. The boolean raw redemption result is an experimental
 API, not a frozen public contract. The separate release service returns signed
-counter statements; their actual cmsg integration remains unverified.
+counter statements; the bounded cmsg composition below does not select a final
+participation policy or integrate every first-contact rule.
 
 ## Reproduce
 
@@ -159,33 +169,45 @@ signed result in its corresponding debit transaction and limits one debit per
 recipient/release nonce. It preserves the first attested chat key and common
 expiry during recovery. The 16 new cases use real enrollment, proof and blind-RSA
 fixtures and pass alongside all 22 raw cases. Their independent Node verifier
-checks the exact cmsg canonical arrays; this is not yet a Rust/MLS round trip.
-Actual cmsg preflight/MLS/permit integration requires separate evidence.
+checks the exact cmsg canonical arrays. The additional composition below provides
+the Rust/MLS round trip; first-contact permit integration remains separate.
 
-The reviewed [actual-member composition harness](COMPOSITION-OUTLINE.md) specifies
-the next bounded check using two native cmsg member keys throughout enrollment,
+The reviewed [actual-member composition harness](COMPOSITION-OUTLINE.md) implements
+the bounded check using two native cmsg member keys throughout enrollment,
 account authorization and actual MLS release. Its [three executable contracts](composition.test.js)
 and [Node driver](composition-driver.js) reached all three intended rejecting
 native `prepareRelease` failures at cfrm
 `2f60fb8aabd87399d5c444569531babf909ac898`, using native cmsg
-`7395344a12a54711e84581edecd2340908db1e87`; the 38 baseline cases still passed.
-This is fail-first evidence, not a successful MLS composition. Each case first
-enrolls the two actual native chat keys plus
+`7395344a12a54711e84581edecd2340908db1e87` (Crow 9/18: 38 baseline passes,
+3 intended composition failures). All three then passed in the 45-case run at
+`82f824c1d26e37d89f946728dab98b36a76612b1` with native
+`7c6740369cf17779c2b749547adfbca92b899f34` (Crow 9/21: 45 passes, 0 failures).
+Each case first enrolls the two actual native chat keys plus
 15 synthetic filler members, publishes the complete qualified checkpoint, and
-generates/verifies an actual sender-excluded qualification proof. No native
-member private key or MLS payload leaves the child.
+generates/verifies an actual sender-excluded qualification proof with 16 eligible
+alternatives. The native sender signs private preflight, the recipient verifies
+it, and each native key signs its own actual account authorization. Maintained
+blind RSA and the real SQLite transactions
+produce both counter attestations before the native gate releases its retained
+MLS material. The real recipient joins, decrypts and checks the authenticated
+sender's unchanged member ID. No native member private key or MLS payload leaves
+the child.
 
-The three cases require the complete counter-backed MLS release, rejection of
+The three passing cases cover counter-backed MLS release, rejection of
 re-signed negative substitution witnesses followed by a valid retry, and local
 encrypted pending restore with exact ledger-response recovery. Altered negative
 statements are explicitly synthetic test witnesses; every successful release and
 retry must use the untouched statements produced by committed ledger operations.
 The native process owns both members only for this harness. The Node driver spans
-synthetic holder/operator roles; this arrangement is not a production relay or
-evidence of network anonymity.
+synthetic holder/operator roles; it does not model an unaware production operator.
+Encrypted restore occurs inside the existing child, with retained wrapping
+material; it is not a process-crash or durable rollback test. This run includes
+no live factor provider, passkey bootstrap, mobile runtime, Tor transport,
+complete policy controller, first reversed accounting or first-contact permit
+integration. Blind unblinding-state recovery and network anonymity remain separate.
 
 Use the reviewed native `counter_bridge` executable from cmsg source
-`7395344a12a54711e84581edecd2340908db1e87` for the initial fail-first run, with the
+`7c6740369cf17779c2b749547adfbca92b899f34` to reproduce the passing run, with the
 existing pinned Node dependencies/artifacts and cvld admission module. Supply its
 absolute path explicitly; a missing executable fails rather than skipping or
 substituting fixture signing keys:
@@ -216,8 +238,9 @@ The fix retains the actual exit status and any late protocol failure, awaits the
 owned child's closure, and shares the same result with repeated shutdown calls.
 After a one-second graceful shutdown deadline it force-terminates the exact
 owned child and still waits for closure before cleanup. This focused result
-establishes the process boundary only; the complete native MLS composition
-remains unverified. The process contracts run without RSA/proof generation or a native executable, using the
+establishes the process boundary; the separate three-case result above establishes
+the bounded native MLS composition. The process contracts run without RSA/proof
+generation or a native executable, using the
 same installed packages and pinned admission-module import:
 
 ```sh

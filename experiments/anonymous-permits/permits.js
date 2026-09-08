@@ -20,7 +20,9 @@ function decode(value, length) {
   if (typeof value !== 'string' || value.length > length * 2 || !/^[A-Za-z0-9_-]+$/.test(value)) throw new TypeError('Invalid encoding');
   const bytes = Buffer.from(value, 'base64url');
   if (bytes.length !== length || encode(bytes) !== value) throw new TypeError('Invalid encoding');
-  return bytes;
+  // Upstream uses Uint8Array.slice().buffer. Buffer.slice() instead keeps the
+  // pooled backing allocation, which would verify unrelated bytes as well.
+  return Uint8Array.from(bytes);
 }
 function contextInfo(context) {
   text(context.scope); text(context.epoch);

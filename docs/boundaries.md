@@ -4,6 +4,8 @@ cfrm is one of three repository boundaries: cvld handles passkeys and independen
 
 The simulator's delivered, sent and received counts are **simulator-only observations**. The current private protocol exposes permit reservations, anonymous spends and endorsements instead. See the [private-accounting contract](../studies/private-accounting-contract.md) before treating any numerical rule as privately enforceable: directional sent/received imbalance remains unsupported, and the proposed reservation/endorsement controller is not implemented.
 
+The follow-up [directional blind-receipt study](../studies/directional-blind-receipts.md) investigates a conditional sent/received acknowledgement protocol without discarding that original requirement. Its collusion, identity-binding and delivery limits are explicit; no accounting controller has been added.
+
 ## Stable identity, temporary presence
 
 A participant has a stable, authenticated platform ID for counterparts in the community and private conversations. Disconnecting does not create a new identity, erase a local block or grant a fresh allowance. Separate communities must not automatically share an operator-visible identity or rule history. Raw phone numbers, payment details and provider-account lookup access do not belong to cfrm.

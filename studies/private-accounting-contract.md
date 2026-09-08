@@ -2,6 +2,8 @@
 
 The proven primitives support **per-account permit issuance budgets and distinct anonymous endorsements**. They do **not** establish per-account messages sent, messages received, actual delivery or sincere replies. The simulator's directional `sent − received` rule therefore remains unsupported by the present private protocol. The candidate below is a demonstrator policy for review, not a silent replacement for that requirement.
 
+The follow-up [directional blind-receipt study](directional-blind-receipts.md) investigates the original directional route using mutually authorized anonymous acknowledgements. It preserves the distinction between an honest-client counter protocol, poolable collusion credit and truthful delivery; neither candidate is selected or implemented.
+
 ## What can be counted
 
 | Event | What is established | What is not established |

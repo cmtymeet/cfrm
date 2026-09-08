@@ -7,3 +7,4 @@
 | [Certified live rendezvous](rendezvous.md) | Can certified chat-key possession authorize a bounded ephemeral onion roster? |
 | [Private acknowledgements and enrollment](private-acknowledgements.md) | What does real Semaphore proving and immutable account binding validate, and what does retention cost? |
 | [Private accounting contract](private-accounting-contract.md) | Which numerical rules follow from actual private observables, and which remain unsupported? |
+| [Directional blind receipts](directional-blind-receipts.md) | Can anonymous acknowledgements update both directional counters, and what can colluders reassign? |

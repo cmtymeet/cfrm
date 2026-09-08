@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { simulate, sweep, defaultExperiment } from '../src/simulate.js';
+import { simulate, sweep, comparePolicies, defaultExperiment } from '../src/simulate.js';
 
 test('a fixed seed reproduces all numerical experiment output', () => {
   const a = simulate({ ...defaultExperiment, seed: 42 });
@@ -62,5 +62,30 @@ test('invalid or accidentally huge experiment inputs fail before execution', () 
     { population: { unknown: 1 } }, { population: { cooperative: 100001 } },
     { population: { 'colluding-pair': 3 } }]) {
     assert.throws(() => simulate({ ...defaultExperiment, ...change }));
+  }
+});
+
+test('bounded windows preserve late cooperative progress across seeds while lifetime imbalance stalls it', () => {
+  for (const seed of [1, 42, 101]) {
+    const config = { ...defaultExperiment, seed, epochs: 16 };
+    const lifetime = simulate(config);
+    const window = simulate({ ...config, policy: { ...config.policy, imbalanceEpochs: 2 } });
+    assert.ok(window.byBehavior.cooperative.reciprocatedApproaches > lifetime.byBehavior.cooperative.reciprocatedApproaches);
+    assert.ok(window.byBehavior.cooperative.lateApproaches > 0);
+    assert.equal(lifetime.byBehavior.cooperative.lateApproaches, 0);
+    assert.equal(window.invariants.withinGrantBound, true);
+    assert.ok(window.exposure.maxPending <= config.policy.pendingCap);
+    assert.equal(window.byBehavior.nonreciprocator.maxActiveEpochs, 0);
+  }
+});
+test('policy comparisons expose both cooperative benefit and hostile reach, with recipient concentration', () => {
+  const rows = comparePolicies({ ...defaultExperiment, epochs: 4 }, [1], [0, 2]);
+  assert.equal(rows.length, 6);
+  for (const row of rows) {
+    assert.ok(Number.isSafeInteger(row.cooperativeReciprocated));
+    assert.ok(Number.isSafeInteger(row.hostileApproaches));
+    assert.ok(Number.isSafeInteger(row.maxUnsolicitedPerTarget));
+    assert.ok(row.maxPending <= defaultExperiment.policy.pendingCap);
+    assert.equal(row.withinGrantBound, true);
   }
 });

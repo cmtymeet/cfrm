@@ -168,6 +168,17 @@ native own-current path only, it additionally queries the trusted own ledger
 for the exact accepted version/commitment. It never queries a counterpart's
 current account. Browser IPC exposes no current-account lookup.
 
+The trusted CLI returns `{verified:true, statement, validUntil}`. This expiry is
+metadata, separate from the peer proof statement: the minimum of common policy
+expiry, the shared introduction lease end and the exact reservation-device
+delegation expiry. Native verification already bounds that delegation within
+its original admission and root-device certificate. cmsg must recheck its own
+current clock against this absolute bound after asynchronous verification and
+before release; verification need not finish in the same clock second.
+The account acceptance's original `statement.validUntil` bounds when its state
+transition could commit. It does **not** expire an accepted Active obligation
+at the next rate-window boundary and is not used as the release expiry.
+
 The live bridge's bounded checks query every newly accepted own state, reject
 absent/altered identities and states, and reject a previous accepted state after
 its successor, including settlement. This is a **read-only snapshot**, not a

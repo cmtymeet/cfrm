@@ -6,7 +6,7 @@ import { Barretenberg, BackendType } from '@aztec/bb.js';
 import { sha, hex, unhex } from '../common.mjs';
 import { accountHashes, checkpointFromVerified, policyDigest, ACCOUNT_MODE } from '../account-state/hashes.mjs';
 import { fieldBytes } from '../hashes.mjs';
-import { PEER_MODE, EXPECTED_KEYS, exact, bytes32, equalBytes } from './witness.mjs';
+import { PEER_MODE, EXPECTED_KEYS, exact, bytes32, equalBytes, safeInteger } from './witness.mjs';
 import { createPeerVerifier } from './verify.mjs';
 import { nativeProcess } from './native-process.mjs';
 
@@ -65,6 +65,15 @@ try {
   Object.assign(expected, { stateVersion: acceptance.statement.nextVersion, stateCommitment: acceptance.statement.nextState,
     ownerAuthority: Array.from(fieldBytes(checkpoint.entries[enrolledIndex].leaf)),
     accountPolicyDigest: Array.from(await policyDigest(community, manifest.accountPolicy)) });
+  // Trusted release metadata, not a new circuit input. The delegation's expiry
+  // is independently bounded by its original admission/root-device authority.
+  // The accepted request's validUntil only bounded its commit; it does not
+  // expire the accepted Active state at every account rate-window boundary.
+  const limits = [safeInteger(manifest.accountPolicy.policyValidUntil),
+    safeInteger(expected.openedAt) + safeInteger(manifest.accountPolicy.abandonAfter),
+    safeInteger(native.entries[enrolledIndex].expiresAt)];
+  const validUntil = limits.reduce((minimum, value) => value < minimum ? value : minimum);
+  if (safeInteger(e.now) >= validUntil) throw new Error('Peer release authority has expired');
   const result = await verifier.verify(request.presentation, { now: e.now, expected,
     accountPolicy: manifest.accountPolicy, enrollmentRoot: Array.from(fieldBytes(checkpoint.root)) });
   if (request.requireCurrentOwn) {
@@ -75,7 +84,7 @@ try {
       stateVersion: expected.stateVersion, stateCommitment: expected.stateCommitment });
     if (!current.ok || current.value?.verified !== true) throw new Error('Own accepted account state has been superseded');
   }
-  process.stdout.write(JSON.stringify(result) + '\n');
+  process.stdout.write(JSON.stringify({ ...result, validUntil: Number(validUntil) }) + '\n');
 } catch (error) {
   process.stderr.write(String(error?.message ?? error) + '\n'); process.exitCode = 1;
 } finally { await api?.destroy(); }

@@ -2,11 +2,37 @@
 
 The [account-state evidence](../experiments/private-accounting/account-state/README.md)
 records real browser proofs and Rust ledger concurrency/retry. Account proofs
-take roughly 27 seconds and sampled Chromium memory exceeds 1 GiB on the
+take roughly 28 seconds and sampled Chromium memory exceeds 1 GiB on the
 measured desktop. Multiple owner transitions precede a first introduction;
 per-proof latency is not the full interaction time. Acceptability needs a
 complete interaction and target-browser measurement. Mobile viability remains
-unverified.
+unverified. The [waiting period is an operational tunable](tuning.md), and must
+allow for proving, acceptance and connection delays as well as user response
+time. Existing reservation deadlines do not move when that setting changes.
+
+## Fixed-wait refund relation
+
+Crow9/61 at `96c1884a08e0b7aaba0dea38c238517ae0261f9c` passed Answer and
+Close with a trusted waiting-period change from 500 to 900 synthetic seconds.
+Answer measured the following costs.
+Its ten account proofs took 28.174–28.661 seconds each; its two peer-v3 proofs
+took 1.864–1.943 seconds each. All proofs are 14,656 bytes. The account relation
+has 343,939 gates, padded to 524,288; the peer relation has 19,987, padded to
+32,768. Both reuse the pinned 655,360-point setup.
+
+Answer loaded 47,032,566 bytes and sampled Chromium-family PSS up to
+1,286,292,480 bytes (about 1.20 GiB), with 2380/2386 complete samples and a
+maximum 8.418-second gap. These samples exclude native fixtures and Node
+verifiers and can miss peaks. Exact peak Wasm memory remains unknown.
+
+Close's twelve account proofs took 28.016–29.575 seconds each and its two peer
+proofs took 1.910–1.930 seconds. It loaded the same 47,032,566 bytes. Sampled
+Chromium-family PSS reached 1,258,962,944 bytes (about 1.17 GiB), with 2757/2761
+complete samples and a maximum 8.789-second gap. Both scenarios use synthetic
+policy clocks and include extra obligations, negative cases and verifier
+startup. Neither is a real-time lease or isolated first-contact benchmark.
+
+## Earlier relation
 
 The v2 Answer scenario on Crow9/58 at `eddc92835b2e2b08bc431852c8ff3332203198eb`
 measured 27.23–28.07 seconds for each of ten account proofs. Its two peer proofs
@@ -31,7 +57,7 @@ account-policy clock, so these results do not establish a usable end-to-end
 lease duration.
 
 The following optimization ideas are not measured improvements. They have not
-changed the implemented v2 relation or receipt formats.
+been applied to the implemented relation or receipt formats.
 
 Crow 9/52 profiled the existing hash-pinned compiled circuit without creating
 new proofs. Of 319,319 gates, debug-source attribution assigns 84,198 to SHA-256

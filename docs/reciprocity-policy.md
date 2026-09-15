@@ -183,10 +183,31 @@ implementation boundaries.
 
 ## Validation
 
-The fixed-wait refund, stored deadlines and live tuning change the previous
-relation. Their new CI results are pending; the archived runs below establish
-the earlier implementation only.
+Crow9/60 tested the fixed-wait refund, stored deadlines and live tuning at cfrm
+`96c1884a08e0b7aaba0dea38c238517ae0261f9c`. It passed 19 independent Rust
+model tests, including 4,680 bounded transitions, 19 storage/authorization tests,
+21 existing native tests, 55 historical JavaScript tests and Wasm checking.
+Model exploration and storage tests are separate from cryptographic acceptance.
 
+At pinned cmsg `ef1483c0a709e86975c44f6f8c84e833e7aa6ac4`, Crow10/78
+passed 163 native tests and Wasm checking; Crow10/79 passed 21 actual Chromium
+contract groups with no unexpected tab requests. These include preserved
+original deadlines and refusal to reopen an unresolved or closed contact after
+capacity release. Tab request interception is not process-wide network capture.
+
+Crow9/61 at the same cfrm revision passed the real account/peer browser proof
+integration. Answer/Close passed 231/243 browser checks, 10/12 account proofs
+and two peer proofs each: 26 real proofs in total. Independent Node checks were
+23/25; real Rust ledger checks were 22/24 across 31/35 child processes, plus
+10/12 chronological live applies and 21/25 current-own checks. Both scenarios
+change the waiting period from 500 to 900 while retaining original expiry 600.
+Close settles the recipient immediately; the sender later proves its single
+deadline refund without the recipient. All times are synthetic. Browser and
+Node use the same cryptographic backend; this is not implementation diversity.
+See the [current integration evidence](../experiments/private-accounting/account-state/README.md#revision3-integration-evidence)
+for checked artifact hashes and [proof costs](account-proof-cost.md).
+
+### Earlier relation
 
 The independent Rust model passed 13 tests, including 4,680 bounded transitions,
 on Crow9/54. This is bounded exploration plus the invariant argument above,

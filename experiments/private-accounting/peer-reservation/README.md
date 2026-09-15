@@ -1,9 +1,10 @@
 # Peer reservation proof foundation
 
-**Peer version3 is a source candidate; validation pending.** Archived peer-v2
-Answer/Close integrations below passed. In each, two real
-browser peer proofs verified against genuine Rust account acceptances and
-feed the native cmsg protected-release gate. Production
+**Peer version3 passed in Answer and Close on Crow 9/61.**
+Two real browser peer proofs per scenario verified against genuine Rust account
+acceptances
+after waiting-period tuning and fed the native cmsg protected-release gate.
+Archived peer-v2 integrations are retained separately below. Production
 `AllocationLedger::resolve_private` remains closed; this fixture does not
 establish deployment, complete recovery or mobile feasibility. The older v1
 relation only compiled on Crow 9/51 at `0ae9b897490bd48810b89fcc561e9e04128a80bc`.
@@ -146,8 +147,8 @@ verification using separately loaded/pinned artifacts and the real adapter.
 
 The current source wires driver IPC to obtain the real acceptance **while the
 browser retains its private opening**, browser/Rust verification and the trusted
-Node adapter below. Archived peer-v2 integrations passed as recorded below;
-peer-v3 with explicit expiry and stable policy binding awaits validation.
+Node adapter below. Peer-v3 with explicit expiry and stable policy binding passed
+both current integrations; all downloaded artifacts match the final suite manifest.
 Account browser results do not retain openings outside the page.
 Do not serialize witnesses to the driver or
 replace this step with a synthetic acceptance.
@@ -205,6 +206,45 @@ not establish that a certificate is the latest one.
 
 Only synthetic fixture pair presentations appear in test evidence. Production
 must keep these artifacts on the authenticated peer channel.
+
+## Peer-v3 evidence
+
+Crow 9/61 passed Answer and Close at cfrm
+`96c1884a08e0b7aaba0dea38c238517ae0261f9c`, with cmsg
+`ef1483c0a709e86975c44f6f8c84e833e7aa6ac4`: Answer's 231 and Close's 243
+Chromium checks each include **42 checks for each of two real Active peer proofs**.
+All ten downloaded metadata/artifact files match final `SHA256SUMS` (SHA256
+`05e0d14f8a62949c72d00cc0c6c1d617ad9d8c2398c86b7a09d9188f5012bfaa`).
+The downloaded files are a verified partial set, not the complete browser package.
+The [account evidence](../account-state/README.md#revision3-integration-evidence)
+records both scenario evidence hashes.
+
+All four proofs are 14,656 bytes. Answer takes 1.864–1.943 seconds to prove and
+33.56–39.48 ms to verify; Close takes 1.910–1.930 seconds and 32.32–34.96 ms.
+The circuit has 19,987 gates, padded to 32,768, with
+389 public fields. Its circuit/VK hashes are
+`cbd57dc1f2ae45e11cfc39c4d1c1e3fa5b8aa73ef3021e4068d41a32ce22913b` /
+`29ddebe6e7e0d22b34c1e6dfbe5168fb170841d5222a004b97a930127300f5a4`.
+
+The native gate verifies the original Active presentations after the real
+operator changes waiting time 500→900; the original expiry 600 remains fixed.
+Cases reject altered expiry, authority, tuple, stable policy, history,
+challenge, path, terminal phase, certificate, scope and proof. State openings
+remain in the page. Answer's live bridge accepts 10 chronological account proofs
+and passes 21 current-own checks; Close accepts 12 and passes 25. Separately,
+Node passes 23 account checks in Answer and 25 in Close; Rust ledger replay
+passes 22 checks across 31 child processes and 24 across 35, respectively. These are distinct
+integration boundaries, not distinct cryptographic implementations.
+
+Each one-thread Chrome 152.0.7977.64 flow loads 47,032,566 bytes. Whole-flow
+Chromium-family PSS reaches 1,286,292,480 bytes (about 1.20 GiB) in Answer and
+1,258,962,944 bytes (about 1.17 GiB) in Close. Answer has 2380/2386 complete samples
+and a maximum 8.418-second gap; Close has 2757/2761 and an 8.789-second gap.
+This includes account proving,
+excludes native/Node processes and does not measure the peer circuit's isolated
+memory or an exact peak. Mobile feasibility, native renewal and delivery-wide
+locking are not established by this run. See the
+[current account evidence](../account-state/README.md#revision3-integration-evidence).
 
 ## Archived peer-v2 evidence
 

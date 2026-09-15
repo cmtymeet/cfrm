@@ -1,8 +1,11 @@
 # Account-state foundation
 
-**Fixed-wait refund and runtime waiting-period tuning are source candidates.**
-The archived revision2 Answer/Close integrations below passed with the former
-Close/expiry burn rule. They do not validate this revision3 candidate. Real
+**Revision3 Answer, Close and runtime waiting-period tuning passed on Crow 9/61.**
+Real proofs validate confirmed-Answer and fixed-deadline refunds, immediate
+recipient Close settlement, and waiting-only tuning with peer-v3. All downloaded
+artifacts match the final suite checksum manifest. The archived revision2
+integrations below used the former
+Close/expiry burn rule. Real
 browser account and peer proofs compose with signed Rust ledger acceptance and
 the native cmsg release gate. This does not enable production
 `AllocationLedger::resolve_private`, select numerical product policy, or establish
@@ -167,8 +170,8 @@ The browser submits every proof to a real persistent Rust ledger
 before advancing the page-local opening. Two separate Active peer proofs then
 feed the native cmsg gate through its trusted verifier; see the
 [peer bridge contract](../peer-reservation/README.md#live-fixture-bridge).
-The previous revision2 integrations passed as recorded below; the current
-refund/tuning and peer-v3 changes await validation.
+Both current revision3 integrations passed as recorded below, including real
+fixed-deadline refunds and waiting-only tuning through the native ledger.
 Setup hashes live in `account-state/setup-lock.json`; only explicit initial
 `RESOLVE_SETUP=1` may create it. No browser witness is sent for remote proving.
 
@@ -207,6 +210,73 @@ checks the real device authorization, lifetime genesis, exact retry and CAS.
 The common checkpoint and accepted test times come from retained native data,
 not browser claims. Both proof verifiers use Barretenberg; this is not independent
 implementation diversity.
+
+## Revision3 integration evidence
+
+Crow 9/61 passed Answer and Close at cfrm
+`96c1884a08e0b7aaba0dea38c238517ae0261f9c`, with cmsg
+`ef1483c0a709e86975c44f6f8c84e833e7aa6ac4`. All ten downloaded metadata/artifact
+files were verified against the final suite `SHA256SUMS`, whose SHA256 is
+`05e0d14f8a62949c72d00cc0c6c1d617ad9d8c2398c86b7a09d9188f5012bfaa`.
+This local set is a verified **partial set**, not the complete browser package.
+Evidence hashes for `answer/browser-evidence.json` and
+`close/browser-evidence.json` are, respectively:
+
+- `9fc8e278642c6336f8a8ae75bd1215f738b85843c8099074596ba9ec061798b7`
+- `cbf746597767c8693b894d01b55a0148c099f50323fb00bcc8a3e0009bb4b09f`
+
+| Boundary | Answer | Close |
+| --- | --- | --- |
+| Actual Chromium checks | 231 | 243 |
+| Account proofs / Active peer proofs | 10 / 2 | 12 / 2 |
+| Independent Node account checks | 23 | 25 |
+| Live chronological Rust applies | 10 | 12 |
+| Current-own state checks | 21 | 25 |
+| Separate Rust ledger checks / child processes | 22 / 31 | 24 / 35 |
+
+Each browser count includes 42 checks for each peer proof. The real operator
+changes the waiting period from 500 to 900 after both original Active states,
+before the native gate binds. Existing commitments and the original expiry 600
+remain unchanged. Confirmed Answer refunds the sender early; incoming Answer
+settles using the original acknowledgment after sender authority expires.
+Prepared cancellation also receives real acceptance. Separate Rust replay
+checks include tuning, recovery of an exact accepted old-policy retry, and
+rejection of an unused signed old-policy request. ACVM-only mutation cases are
+counted as browser checks, not additional proofs or ledger transitions.
+
+Close proves the recipient's immediate refund at time 100, then the original
+sender's refund at its unchanged deadline 600, a second unanswered outgoing
+refund and one bounded mature refill. Both actual fixture authorities remain
+valid for these requests. Coherent ACVM cases reject outgoing Close as either
+early refund or burn, premature or altered expiry, duplicate refund and a later
+recipient-signed Answer against the expired tombstone. Withholding or delivering
+the genuine Close produces the same deadline-refund successor without peer
+eligibility. New reservations alone adopt the tuned wait; refunds retain the
+admission count and tombstone. These times are synthetic test controls.
+
+The account circuit has 343,939 gates (padded to 524,288); peer-v3 has 19,987
+(padded to 32,768). Account circuit/VK hashes are
+`e499d4f7d9cda9c7dd22e3a96f36318c88f6101db9106d02aa52c9d4abe467f7` /
+`cca35478eed52601593fbd253ace56da26066160a6db2afd3b0cca86d8675144`;
+peer circuit/VK hashes are
+`cbd57dc1f2ae45e11cfc39c4d1c1e3fa5b8aa73ef3021e4068d41a32ce22913b` /
+`29ddebe6e7e0d22b34c1e6dfbe5168fb170841d5222a004b97a930127300f5a4`.
+
+Every proof is 14,656 bytes. Account proving took 28.174–28.661 seconds per
+transition in Answer and 28.016–29.575 seconds in Close; browser verification
+took 21.64–50.16 ms and 21.28–54.32 ms, respectively. Peer proving took
+1.864–1.943 seconds in Answer and 1.910–1.930 seconds in Close, with verification
+33.56–39.48 ms and 32.32–34.96 ms. These are individual proof timings, not full
+first-contact latency. Chrome 152.0.7977.64 and Node 24.19.0 used one browser
+proving thread; each flow loaded 47,032,566 bytes. Sampled Chromium-family PSS
+peaked at 1,286,292,480 bytes (about 1.20 GiB) in Answer and 1,258,962,944 bytes
+(about 1.17 GiB) in Close. Answer had 2380/2386 complete samples and a maximum
+8.418-second gap; Close had 2757/2761 complete samples and a maximum
+8.789-second gap. These whole-flow
+samples exclude native/Node processes, can miss peaks, and do not measure
+isolated Wasm memory or establish mobile feasibility. Actual native renewal
+remains untested; current-own queries remain snapshots and both proof verifiers
+use the same BB engine.
 
 ## Archived revision2 integration evidence
 
@@ -306,9 +376,9 @@ sampling can miss peaks and shared-host load affects timing. The cost prevents
 claiming readiness for the intended browser experience. Mobile viability and
 exact peak Wasm memory remain unverified.
 
-Private matching Active proofs and the native release gate are now exercised
-in both archived fixtures above. The new refund/tuning relation still needs
-its own execution evidence. Recovery/opening synchronization, authenticated
+Private matching Active proofs and the native release gate are exercised in
+both current refund/tuning scenarios and both archived fixtures above.
+Recovery/opening synchronization, authenticated
 policy/key migration, proof of opaque history evolution, operator consistency
 and target-browser measurements remain outside this evidence. Additional
 rewards/disapproval are unselected. This is neither a complete production

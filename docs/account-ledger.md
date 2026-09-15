@@ -69,13 +69,25 @@ all replicas and a malicious operator's inconsistent histories remain limits.
 
 ## Executed evidence
 
-Crow9/59 at `5e33c10bceb2361c7e16a722a0259bb7f11ef050` passed 19
+Crow9/60 at `96c1884a08e0b7aaba0dea38c238517ae0261f9c` passed 19
 storage/authorization tests, including six new live-tuning tests. They exercise
 concurrent tuning, rejected stale handles/proofs, tuning during verification,
 rollback after partial writes, restart recovery, immutable fields and exact
-old-policy retries. These use the explicit synthetic proof verifier. The fixed
-deadline/refund circuit and peer-v3 browser evidence require their separate run.
+old-policy retries. The same run passed 19 reciprocity-model tests, including
+4,680 bounded transitions, the existing 21 native and 55 historical JavaScript
+tests, and the portable Wasm check. Storage tests use the explicit synthetic
+proof verifier.
 
+Crow9/61 at the same revision passed real browser account/peer proofs through
+the Rust ledger and cmsg gate. Answer/Close passed 22/24 separate Rust ledger
+checks across 31/35 child processes, plus 10/12 chronological live applies.
+Both scenarios change the waiting period from 500 to 900 synthetic seconds,
+recover exact accepted old-policy retries, and reject unused old-policy writes.
+Original reservations still expire at 600. See the
+[current integration evidence](../experiments/private-accounting/account-state/README.md#revision3-integration-evidence)
+for proof counts, artifact hashes and limits.
+
+### Earlier relation
 
 At `524956395852696c1d3f6ac4bd57ef5f8652c261`, Crow run 9/48 passed thirteen
 storage/authorization tests, the existing 21 native and 55 historical JavaScript

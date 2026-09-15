@@ -12,6 +12,7 @@ variables:
   CHECK_PHASE: {default: "full"}
   CIRCUIT_PATH: {default: ""}
   CIRCUIT_SHA256: {default: ""}
+  HASH_SCHEME: {default: "sha256-v1"}
 steps:
   - name: verified-source
     image: bash

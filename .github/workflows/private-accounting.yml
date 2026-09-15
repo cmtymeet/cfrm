@@ -1,6 +1,14 @@
 name: Private accounting browser experiment
 on:
   workflow_dispatch:
+    inputs:
+      hash_scheme:
+        description: Experimental commitment scheme to measure
+        type: choice
+        default: sha256-v1
+        options:
+          - sha256-v1
+          - poseidon2-bn254-fixed-128-v1
 permissions:
   contents: read
 jobs:
@@ -15,6 +23,7 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       ARTIFACT_ROOT: ${{ runner.temp }}/accounting-evidence
       RESOLVE_DEPENDENCIES: '0'
+      HASH_SCHEME: ${{ inputs.hash_scheme }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:

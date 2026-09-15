@@ -136,6 +136,10 @@ also requires common configurations, Tor, careful scheduling and trusted browser
 code; low traffic and correlated named updates remain identifying metadata.
 [Privacy Pass architecture](https://www.rfc-editor.org/rfc/rfc9576.html)
 
+The [durable reservation/recovery proposal](private-reservation-protocol.md)
+spells out candidate owner envelopes and peer-only evidence. It is design work,
+not implemented genesis or an approved refund policy.
+
 ## Can the directional blind-receipt experiment be repaired directly?
 
 The [experiment](../experiments/directional-receipts/README.md) already demonstrates
@@ -238,3 +242,27 @@ The next bounded checks are:
 If browser resources are unsuitable, measure the unchanged-Ed25519/zkVM route
 separately; never remove owner binding or upload a private witness to make a
 benchmark pass. None of these routes yet constitutes the full backend.
+
+### Bounded cost comparison proposal
+
+The [artifact-only profiler](../experiments/private-accounting/profile.mjs)
+passed on Crow 9/39: SHA-256 source accounts for 152,608 gates (76.2%) and P-256
+for 43,103 of the existing 200,214. This is source attribution, not isolated
+primitive timing or a proportional memory forecast.
+
+A separately versioned comparison keeps the exact SHA-256/WebCrypto P-256
+receipt and root-owned Ed25519 delegation while using the maintained
+[Noir Poseidon2 fixed-length hash](https://github.com/noir-lang/poseidon/blob/f249446e6e01f7b607ad35351cebe0cc20068cb7/src/poseidon2.nr)
+for commitments and Merkle nodes. Reuse the upstream sponge/permutation; do not
+write one. Pin the field, arity, domain tags and encoding. Represent each
+256-bit identity/key component using checked limbs, never modular reduction
+of a whole 32-byte identifier. Keep all equality/range/role/time constraints.
+
+The independent verifier must derive the common root from the original
+Rust-verified signed enrollments, using the same pinned hash and cross-language
+vectors; a browser-supplied root is insufficient. Its new signed delegation
+explicitly binds the hash scheme. The [BB implementation](https://github.com/AztecProtocol/aztec-packages/blob/v5.0.0/barretenberg/cpp/src/barretenberg/crypto/poseidon2/poseidon2.hpp)
+provides a maintained native counterpart. Existing library version compatibility,
+field encoding and composition still require checking. The isolated comparison
+has source review but awaits CI; no performance benefit or new audit is claimed.
+Its namespace change is not a migration path for existing states or markers.

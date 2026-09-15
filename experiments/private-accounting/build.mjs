@@ -7,11 +7,14 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 import { OPTIONS } from './common.mjs';
+import { checkScheme, SHA_SCHEME, POSEIDON_SCHEME, POSEIDON_SOURCE } from './hashes.mjs';
 
 const hash = data => createHash('sha256').update(data).digest('hex');
+const hashScheme = checkScheme(process.env.HASH_SCHEME ?? SHA_SCHEME);
+const circuitDir = hashScheme === POSEIDON_SCHEME ? 'circuit-poseidon2' : 'circuit';
 await mkdir('public/setup', { recursive: true });
 const started = performance.now();
-const compiled = await compile(createFileManager(resolve('circuit')));
+const compiled = await compile(createFileManager(resolve(circuitDir)));
 if (!compiled.program?.bytecode) throw new Error('Compiler produced no circuit');
 await writeFile('public/circuit.json', JSON.stringify(compiled.program));
 const api = await Barretenberg.new({ backend: BackendType.Wasm, threads: 1, skipSrsInit: true,
@@ -80,8 +83,9 @@ try {
     wasm.push({ name: name + '.wasm', bytes: data.length, sha256: hash(data) });
   }
   const manifest = { version: 1, compiler: '1.0.0-beta.26', backend: '5.0.0', verifierTarget: OPTIONS.verifierTarget,
+    hashScheme, poseidonSource: hashScheme === POSEIDON_SCHEME ? POSEIDON_SOURCE : null,
     circuitSha256: hash(await readFile('public/circuit.json')), vkSha256: hash(vk),
-    circuitSourceSha256: hash(await readFile('circuit/src/main.nr')), numPoints, setup, wasm,
+    circuitSourceSha256: hash(await readFile(circuitDir + '/src/main.nr')), numPoints, setup, wasm,
     compileAndSetupMs: performance.now() - started, stats, threads: 1, maximumWasmBytes: 32768 * 65536 };
   await writeFile('public/manifest.json', JSON.stringify(manifest, null, 2));
 } finally { await api.destroy(); }

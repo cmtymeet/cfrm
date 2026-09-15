@@ -5,9 +5,18 @@ rustc --version
 cargo --version
 node --version
 artifact_dir="$ARTIFACT_ROOT/$CI_COMMIT_SHA/private-accounting"
+export HASH_SCHEME="${HASH_SCHEME:-sha256-v1}"
+case "$HASH_SCHEME" in
+  sha256-v1) ;;
+  poseidon2-bn254-fixed-128-v1) artifact_dir="$artifact_dir-$HASH_SCHEME" ;;
+  *) printf 'Unknown accounting commitment scheme\n'; exit 2 ;;
+esac
 case "${CHECK_PHASE:-full}" in
   full) ;;
-  profile) artifact_dir="$artifact_dir-profile" ;;
+  profile)
+    [[ "${CIRCUIT_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] || exit 2
+    artifact_dir="$artifact_dir-profile-$CIRCUIT_SHA256"
+    ;;
   *) printf 'Unknown private accounting check phase\n'; exit 2 ;;
 esac
 mkdir -p "$artifact_dir"

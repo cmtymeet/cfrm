@@ -5,14 +5,18 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { resolve, join, extname, sep } from 'node:path';
 import { tmpdir } from 'node:os';
+import { checkScheme, SHA_SCHEME, POSEIDON_SCHEME } from './hashes.mjs';
 
 const binary = process.env.BROWSER_BIN;
 const fixtureBinary = process.env.ACCOUNTING_FIXTURE;
 const evidencePath = process.env.BROWSER_EVIDENCE;
+const hashScheme = checkScheme(process.env.HASH_SCHEME ?? SHA_SCHEME);
+const localManifest = JSON.parse(await readFile('public/manifest.json', 'utf8'));
+if (localManifest.hashScheme !== hashScheme) throw new Error('Harness hash scheme differs from built circuit');
 if (!binary || !fixtureBinary || !evidencePath) throw new Error('BROWSER_BIN, ACCOUNTING_FIXTURE, BROWSER_EVIDENCE required');
 const root = resolve('dist');
 const profile = await mkdtemp(join(tmpdir(), 'cfrm-accounting-'));
-const evidence = { source: process.env.CI_COMMIT_SHA, runtime: process.version, ok: false,
+const evidence = { source: process.env.CI_COMMIT_SHA, runtime: process.version, hashScheme, ok: false,
   fixtureRequests: 0, forbiddenRequests: [], loadedBytes: 0, browserErrors: [] };
 let fixture, browser, socket, origin, fixtureWaiting, fixtureTimer, deadline, browserMemory;
 let fixtureOutput = '', fixtureStderr = '', stderr = '', enrolled;
@@ -198,10 +202,11 @@ function sampleBrowserMemory(child) {
 function failFixture(error) { fixtureWaiting?.reject(error); fixtureWaiting = undefined; clearTimeout(fixtureTimer); }
 function publicCommand(value) {
   const exact = (v, keys) => v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).sort().join(',') === [...keys].sort().join(',');
-  if (value?.action === 'enroll') return exact(value, ['action', 'keys']) && value.keys?.length === 4 && value.keys.every(k =>
+  if (value?.hashScheme !== SHA_SCHEME && value?.hashScheme !== POSEIDON_SCHEME) return false;
+  if (value?.action === 'enroll') return value.hashScheme === hashScheme && exact(value, ['action', 'hashScheme', 'keys']) && value.keys?.length === 4 && value.keys.every(k =>
     exact(k, ['accountKey', 'secretHash']) && /^[0-9a-f]{128}$/.test(k.accountKey) && /^[0-9a-f]{64}$/.test(k.secretHash));
-  if (value?.action !== 'verify' || !exact(value, ['action', 'entries']) || value.entries?.length !== 4) return false;
-  return value.entries.every(e => exact(e, ['admission', 'authorization', 'accountKey', 'secretHash', 'issuedAt', 'expiresAt', 'signature'])
+  if (value?.action !== 'verify' || !exact(value, ['action', 'hashScheme', 'entries']) || value.entries?.length !== 4) return false;
+  return value.entries.every(e => exact(e, ['admission', 'authorization', 'hashScheme', 'accountKey', 'secretHash', 'issuedAt', 'expiresAt', 'signature'])
     && exact(e.admission, ['version', 'issuerKeyId', 'communityId', 'memberId', 'chatPublicKey', 'policyDigest', 'issuedAt', 'expiresAt', 'signature'])
     && exact(e.authorization, ['version', 'communityId', 'memberId', 'rootPublicKey', 'devicePublicKey', 'issuedAt', 'expiresAt', 'signature']));
 }

@@ -17,6 +17,14 @@ const NOW: u64 = 100;
 const START: u64 = 80;
 const END: u64 = 1000;
 
+#[derive(Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+enum HashScheme {
+    #[serde(rename = "sha256-v1")]
+    Sha256,
+    #[serde(rename = "poseidon2-bn254-fixed-128-v1")]
+    Poseidon2,
+}
+
 type Result<T> = std::result::Result<T, String>;
 fn hash(bytes: impl AsRef<[u8]>) -> [u8; 32] {
     Sha256::digest(bytes).into()
@@ -46,6 +54,7 @@ struct PublicKey {
 struct Enrollment {
     admission: AdmissionGrant,
     authorization: DeviceAuthorization,
+    hash_scheme: HashScheme,
     account_key: String,
     secret_hash: String,
     issued_at: u64,
@@ -54,11 +63,17 @@ struct Enrollment {
 }
 fn enrollment_bytes(e: &Enrollment) -> Result<Vec<u8>> {
     decode::<64>(&e.account_key)?;
-    decode::<32>(&e.secret_hash)?;
+    let secret_hash = decode::<32>(&e.secret_hash)?;
+    if e.hash_scheme == HashScheme::Poseidon2
+        && secret_hash >= decode::<32>("30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001")?
+    {
+        return Err("noncanonical Poseidon2 field".into());
+    }
     if e.issued_at != START || e.expires_at != END {
         return Err("fixture time bounds".into());
     }
-    serde_json::to_vec(&json!([
+    let message = if e.hash_scheme == HashScheme::Sha256 {
+        json!([
         "cfrm.accounting-enrollment.spike.v1",
         COMMUNITY,
         e.admission.member_id,
@@ -66,7 +81,14 @@ fn enrollment_bytes(e: &Enrollment) -> Result<Vec<u8>> {
         e.secret_hash,
         e.issued_at,
         e.expires_at
-    ]))
+        ])
+    } else {
+        json!([
+            "cfrm.accounting-enrollment.spike.v2", e.hash_scheme, COMMUNITY,
+            e.admission.member_id, e.account_key, e.secret_hash, e.issued_at, e.expires_at
+        ])
+    };
+    serde_json::to_vec(&message)
     .map_err(|_| "canonical enrollment".into())
 }
 fn trust() -> AdmissionTrust {
@@ -76,7 +98,7 @@ fn trust() -> AdmissionTrust {
         issuer_public_key: SigningKey::from_bytes(&[17; 32]).verifying_key().to_bytes(),
     }
 }
-fn make(index: usize, key: &PublicKey) -> Result<Enrollment> {
+fn make(index: usize, key: &PublicKey, hash_scheme: HashScheme) -> Result<Enrollment> {
     let root = SigningKey::from_bytes(&[50 + index as u8; 32]);
     let device = SigningKey::from_bytes(&[60 + index as u8; 32]);
     let issuer = SigningKey::from_bytes(&[17; 32]);
@@ -116,6 +138,7 @@ fn make(index: usize, key: &PublicKey) -> Result<Enrollment> {
     let mut e = Enrollment {
         admission,
         authorization,
+        hash_scheme,
         account_key: key.account_key.clone(),
         secret_hash: key.secret_hash.clone(),
         issued_at: START,
@@ -141,13 +164,16 @@ fn node(a: [u8; 32], b: [u8; 32]) -> [u8; 32] {
     bytes.extend(b);
     hash(bytes)
 }
-fn verify(entries: &[Enrollment]) -> Result<Value> {
+fn verify(entries: &[Enrollment], hash_scheme: HashScheme) -> Result<Value> {
     if entries.len() != 4 {
         return Err("fixture roster has exactly four roots".into());
     }
     let mut seen = BTreeSet::new();
     let mut leaves = Vec::new();
     for (index, e) in entries.iter().enumerate() {
+        if e.hash_scheme != hash_scheme {
+            return Err("enrollment hash scheme substitution".into());
+        }
         verify_admission(&e.admission, &trust(), NOW).map_err(|_| "eligibility")?;
         verify_admission(&e.admission, &trust(), e.issued_at)
             .map_err(|_| "backdated eligibility")?;
@@ -174,35 +200,42 @@ fn verify(entries: &[Enrollment]) -> Result<Value> {
                 &Signature::from_bytes(&b64::<64>(&e.signature)?),
             )
             .map_err(|_| "delegation signature")?;
-        leaves.push(leaf(e)?);
+        if hash_scheme == HashScheme::Sha256 {
+            leaves.push(leaf(e)?);
+        }
     }
-    let left = node(leaves[0], leaves[1]);
-    let right = node(leaves[2], leaves[3]);
+    let root = if hash_scheme == HashScheme::Sha256 {
+        Some(HEX.encode(&node(node(leaves[0], leaves[1]), node(leaves[2], leaves[3]))))
+    } else {
+        // No new Rust hash primitive: each verifier computes Poseidon2 itself
+        // from these original, strictly verified signed entries using pinned BB.
+        None
+    };
     Ok(
-        json!({ "community": HEX.encode(&hash(COMMUNITY)), "root": HEX.encode(&node(left, right)),
+        json!({ "community": HEX.encode(&hash(COMMUNITY)), "root": root, "hashScheme": hash_scheme,
         "now": NOW, "entries": entries, "leaves": leaves.iter().map(|v| HEX.encode(v)).collect::<Vec<_>>() }),
     )
 }
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
 enum Command {
-    Enroll { keys: Vec<PublicKey> },
-    Verify { entries: Vec<Enrollment> },
+    Enroll { keys: Vec<PublicKey>, #[serde(rename = "hashScheme")] hash_scheme: HashScheme },
+    Verify { entries: Vec<Enrollment>, #[serde(rename = "hashScheme")] hash_scheme: HashScheme },
 }
 fn command(c: Command) -> Result<Value> {
     match c {
-        Command::Enroll { keys } => {
+        Command::Enroll { keys, hash_scheme } => {
             if keys.len() != 4 {
                 return Err("four public keys required".into());
             }
             let entries = keys
                 .iter()
                 .enumerate()
-                .map(|(i, k)| make(i, k))
+                .map(|(i, k)| make(i, k, hash_scheme))
                 .collect::<Result<Vec<_>>>()?;
-            verify(&entries)
+            verify(&entries, hash_scheme)
         }
-        Command::Verify { entries } => verify(&entries),
+        Command::Verify { entries, hash_scheme } => verify(&entries, hash_scheme),
     }
 }
 fn main() -> std::io::Result<()> {

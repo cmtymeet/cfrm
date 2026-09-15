@@ -7,7 +7,8 @@ audit, Tor transport test or mobile performance claim.** Production
 
 ## What this proves
 
-The [Noir circuit](circuit/src/main.nr) checks a single transition from an existing
+The [baseline Noir circuit](circuit/src/main.nr) and separately versioned
+[Poseidon2 comparison](circuit-poseidon2/src/main.nr) check a single transition from an existing
 reserved obligation to its settlement. A common four-member synthetic enrollment
 checkpoint contains each member's permanent identity, delegated P-256 key,
 accounting-secret commitment and validity interval. Both membership paths remain
@@ -49,10 +50,20 @@ signature over this experimental delegation:
  accountKeyHex, accountingSecretHashHex, issuedAt, expiresAt]
 ```
 
+The Poseidon2 comparison uses a distinct signed transcript:
+
+```text
+["cfrm.accounting-enrollment.spike.v2", "poseidon2-bn254-fixed-128-v1",
+ community, member, accountKeyHex, accountingSecretHashHex, issuedAt, expiresAt]
+```
+
 Eligibility and device authority are checked at the current fixture time and
 the delegation's signed time. The member identity is derived from the root.
-The fixture checks its independently pinned four roots and computes the Merkle
-root from the verified original entries; a supplied root is never authoritative.
+The fixture checks its independently pinned four roots. In the SHA baseline it
+computes the Merkle root. For Poseidon2 it returns the original verified entries
+and `root: null`; the browser and independent Node verifier each derive their
+own root with the pinned BB5 hash API. The verifier uses the entries retained
+directly from the native process, never a browser-supplied root or enrollment.
 Changing the delegated key, member or secret commitment, copying an issuer's
 signature into root authorization, and duplicating an enrollment are rejected.
 
@@ -73,6 +84,39 @@ Full accounting must allow an admitted recipient to close after its silent
 counterpart expires, using historical reservation provenance and current owner
 authority. Requiring the silent peer to renew would incorrectly trap that
 recipient's capacity; this experiment does not implement that historical path.
+
+## Versioned hash comparison
+
+`HASH_SCHEME=sha256-v1` remains the default and selects the original circuit.
+`HASH_SCHEME=poseidon2-bn254-fixed-128-v1` selects the isolated comparison. The
+build, harness, signed enrollment and independent verifier bind the selected
+scheme. The two modes are separate experiments, **not a migration path** between
+live ledgers: production migration would need state/genesis/marker continuity.
+
+The comparison retains the exact SHA-256/WebCrypto P-256 receipt transcript and
+all owner, peer, role, signature, time and conservation checks. Only enrollment
+hashes, Merkle nodes, private state commitments and owner-specific event markers
+use [upstream Poseidon2](https://github.com/noir-lang/poseidon/blob/f249446e6e01f7b607ad35351cebe0cc20068cb7/src/poseidon2.nr),
+pinned at `f249446e6e01f7b607ad35351cebe0cc20068cb7`. It calls the existing
+fixed-length sponge; no permutation or sponge is implemented here.
+
+Each transcript begins with the field encoding of ASCII
+`cfrm.accounting.poseidon2.v1` and its operation tag. Fixed field arities are
+6 (secret), 13 (leaf), 4 (node), 18 (state) and 12 (event). Arbitrary 32-byte
+identities, key components, nonces and secrets retain two big-endian 128-bit
+limbs with range constraints. Digest inputs must be canonical BN254 scalar
+encodings; values at or above the field modulus are rejected. Neither IDs nor
+keys are reduced modulo the field. Public output digests remain canonical
+32-byte arrays, preserving the experiment's 193-field public ABI.
+
+Valid proofs exercise the upstream/BB hash match at full and partial sponge
+rates. Additional negatives cover scheme reinterpretation, noncanonical fields
+and field-congruent identities. One test genuinely re-signs a receipt after
+changing nonce `7` to `7 + field_modulus`, retaining the old state and event
+marker; an erroneous whole-field identity conversion must not make it valid.
+The comparison is ready for CI; **no Poseidon2 performance result is recorded yet**.
+The conservative 524,288-point setup floor remains pinned; a smaller setup has
+not been substituted to improve the benchmark.
 
 ## Existing primitives and exact pins
 
@@ -230,6 +274,20 @@ reparented before discovery can be missed. These are sampled process estimates,
 Roughly 1 GB of sampled browser memory for one obligation warrants further
 measurement and circuit optimization before mobile feasibility can be accepted.
 The faster verifier does not remove the prover's memory or latency costs.
+
+### Profiling the existing compiled artifact
+
+[profile.mjs](profile.mjs) accepts `CIRCUIT_PATH`, `CIRCUIT_SHA256` and
+`PROFILE_ARTIFACT_DIR` (both paths absolute). On Crow, run it with the locked
+project dependencies. It verifies the exact compiled JSON digest and requests
+per-opcode gate counts from the same backend, without compilation, setup or
+proof witnesses. It writes raw counts, decompressed public debug symbols and
+source mappings, including explicit missing-location/shared-overhead accounting.
+Source attribution is not an isolated primitive timing or memory benchmark.
+Crow **9/39** attributed 152,608 gates to SHA-256 source (76.2%), 43,103 to P-256,
+556 to other located source and 3,738 to opcodes without debug locations, with
+209 further gates outside the opcode totals. This motivates the separate hash
+comparison; it does not predict a proportional reduction in time or memory.
 
 ## Required work beyond this spike
 

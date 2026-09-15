@@ -2,10 +2,13 @@
 import { readFile } from 'node:fs/promises';
 import { Barretenberg, BackendType, UltraHonkVerifierBackend } from '@aztec/bb.js';
 import { OPTIONS, hex, unhex, sha, memberBytes } from './common.mjs';
+import { checkScheme, POSEIDON_SCHEME, fieldValue, hashesFor, deriveCheckpoint } from './hashes.mjs';
 
 export async function verifyResults(result, enrolled) {
   if (!enrolled || result.proofs?.length !== 2) throw new Error('Missing independent enrollment/proof evidence');
   const manifest = JSON.parse(await readFile('public/manifest.json', 'utf8'));
+  const hashScheme = checkScheme(manifest.hashScheme);
+  if (enrolled.hashScheme !== hashScheme || result.hashScheme !== hashScheme) throw new Error('Independent hash scheme pin mismatch');
   const vk = new Uint8Array(await readFile('public/vk.bin'));
   const circuit = new Uint8Array(await readFile('public/circuit.json'));
   if (hex(await sha(vk)) !== manifest.vkSha256 || hex(await sha(circuit)) !== manifest.circuitSha256) throw new Error('Independent verifier artifact pin mismatch');
@@ -14,6 +17,8 @@ export async function verifyResults(result, enrolled) {
   const checks = [];
   const check = (condition, name) => { if (!condition) throw new Error(name); checks.push(name); };
   try {
+    const checkpoint = await deriveCheckpoint(enrolled, hashesFor(hashScheme, async () => api));
+    check(enrolled.entries.every(entry => entry.hashScheme === hashScheme), 'independent checkpoint derives from native-verified enrollments under pinned scheme');
     // The verifier needs only the public setup. No browser witness is accepted.
     const setup = {};
     for (const record of manifest.setup) {
@@ -28,6 +33,9 @@ export async function verifyResults(result, enrolled) {
       const values = value.publicInputs.map(x => BigInt(x));
       if (values.slice(0, 192).some(x => x < 0n || x > 255n)) throw new Error('Public byte range');
       const bytes = Uint8Array.from(values.slice(0, 192), Number);
+      if (hashScheme === POSEIDON_SCHEME) {
+        for (const start of [32, 96, 128, 160]) fieldValue(bytes.slice(start, start + 32));
+      }
       return { proof: unhex(value.proof), publicInputs: value.publicInputs, verificationKey: vk,
         community: hex(bytes.slice(0, 32)), root: hex(bytes.slice(32, 64)), owner: hex(bytes.slice(64, 96)),
         old: hex(bytes.slice(96, 128)), next: hex(bytes.slice(128, 160)), marker: hex(bytes.slice(160, 192)), now: values[192] };
@@ -36,7 +44,7 @@ export async function verifyResults(result, enrolled) {
     const started = performance.now();
     for (let i = 0; i < proofs.length; i++) {
       const proof = proofs[i];
-      check(proof.community === enrolled.community && proof.root === enrolled.root && proof.now === 100n, 'verifier independently pins scope/checkpoint/time ' + i);
+      check(proof.community === enrolled.community && proof.root === hex(checkpoint.root) && proof.now === 100n, 'verifier independently pins scope/checkpoint/time ' + i);
       check(proof.owner === hex(memberBytes(enrolled.entries[i].admission.memberId)), 'named proof owner matches independently verified enrollment ' + i);
       check(await verifier.verifyProof(proof, OPTIONS), 'independent cryptographic verification role ' + i);
     }
@@ -62,7 +70,7 @@ export async function verifyResults(result, enrolled) {
     check(!accept(valid), 'fixture rejects same receipt replay');
     check(!accept({ ...valid }), 'fixture rejects cloned proof against consumed state');
     check(proofs[0].marker !== proofs[1].marker, 'different scenario proofs expose different markers');
-    return { checks, elapsedMs: performance.now() - started, verifierTarget: OPTIONS.verifierTarget,
+    return { checks, elapsedMs: performance.now() - started, verifierTarget: OPTIONS.verifierTarget, hashScheme,
       witnessReceived: false, genesis: 'synthetic pre-reserved opening; production genesis is not implemented' };
   } finally { await api.destroy(); }
 }

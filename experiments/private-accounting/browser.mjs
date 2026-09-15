@@ -1,7 +1,8 @@
 import { Noir } from '@noir-lang/noir_js';
 import { Barretenberg, BackendType, UltraHonkBackend, UltraHonkVerifierBackend } from '@aztec/bb.js';
-import { COMMUNITY_NAME, OPTIONS, hex, unhex, cat, zeros, random, sha, be, memberBytes,
-  secretHash, leaf, node, state, receiptBytes, marker, canonicalSignature } from './common.mjs';
+import { COMMUNITY_NAME, OPTIONS, hex, zeros, random, sha, be, memberBytes,
+  receiptBytes, canonicalSignature } from './common.mjs';
+import { checkScheme, SHA_SCHEME, POSEIDON_SCHEME, FR_MODULUS, fieldValue, limbs32, hashesFor, deriveCheckpoint } from './hashes.mjs';
 
 const metrics = { checks: [], stages: [], proofs: [], userAgent: navigator.userAgent, threads: 1,
   maximumWasmBytes: 32768 * 65536, endJsHeapBytes: null, peakWasmBytes: null };
@@ -23,6 +24,23 @@ async function main() {
   const rawCircuit = await bytes('/circuit.json');
   assert(hex(await sha(rawCircuit)) === manifest.circuitSha256, 'browser circuit matches build manifest');
   const circuit = JSON.parse(new TextDecoder().decode(rawCircuit));
+  stage('initialize-browser-prover');
+  assert(manifest.wasm?.length === 1 && manifest.wasm[0].name === 'barretenberg-threads.wasm', 'manifest pins only the selected shared-memory binary');
+  for (const record of manifest.wasm) {
+    const data = await bytes('/' + record.name);
+    assert(data.length === record.bytes && hex(await sha(data)) === record.sha256, 'pinned same-origin WASM ' + record.name);
+  }
+  const verificationKey = await bytes('/vk.bin');
+  assert(hex(await sha(verificationKey)) === manifest.vkSha256, 'browser verifier uses the pinned build verification key');
+  const api = await Barretenberg.new({ backend: BackendType.WasmWorker, threads: 1, skipSrsInit: true,
+    // The pinned browser loader inserts '-threads' when shared memory is
+    // available, resolving this base path to /barretenberg-threads.wasm.
+    wasmPath: '/barretenberg.wasm', memory: { initial: 2048, maximum: 32768 } });
+  try {
+  const hashScheme = checkScheme(manifest.hashScheme);
+  metrics.hashScheme = hashScheme;
+  const hashes = hashesFor(hashScheme, async () => api);
+  const { secretHash, leaf, state, marker } = hashes;
   const community = await sha(new TextEncoder().encode(COMMUNITY_NAME));
   const holders = [];
   for (let i = 0; i < 4; i++) {
@@ -32,7 +50,7 @@ async function main() {
     holders.push({ key, raw: raw.slice(1), secret, secretHash: await secretHash(community, secret) });
   }
   stage('public-root-delegation');
-  const enrolled = await post({ action: 'enroll', keys: holders.map(h => ({ accountKey: hex(h.raw), secretHash: hex(h.secretHash) })) });
+  const enrolled = await post({ action: 'enroll', hashScheme, keys: holders.map(h => ({ accountKey: hex(h.raw), secretHash: hex(h.secretHash) })) });
   assert(enrolled.ok, 'real Ed25519 root/device delegation accepted by Rust');
   const config = enrolled.value;
   assert(config.community === hex(community), 'community digest matches pinned scope');
@@ -41,9 +59,10 @@ async function main() {
     holders[i].id = memberBytes(entries[i].admission.memberId);
     assert(entries[i].accountKey === hex(holders[i].raw) && entries[i].secretHash === hex(holders[i].secretHash), 'enrollment binds requested public accounting authority ' + i);
   }
-  const leaves = await Promise.all(entries.map((e, i) => leaf(community, holders[i].id, holders[i].raw, holders[i].secretHash, e.issuedAt, e.expiresAt)));
-  const branches = [await node(leaves[0], leaves[1]), await node(leaves[2], leaves[3])];
-  assert(hex(await node(...branches)) === config.root, 'common root reconstructed from original verified enrollments');
+  const checkpoint = await deriveCheckpoint(config, hashes);
+  const { leaves, branches } = checkpoint;
+  assert(hex(checkpoint.community) === config.community && leaves.length === 4 && checkpoint.root.length === 32,
+    'browser derives its checkpoint from Rust-verified enrollments');
   for (const [label, mutate] of [
     ['altered delegated key', e => { e[1].accountKey = e[2].accountKey; }],
     ['altered accounting owner', e => { e[1].admission.memberId = e[2].admission.memberId; }],
@@ -52,19 +71,39 @@ async function main() {
     ['duplicate enrolled permanent identity', e => { e[1] = structuredClone(e[0]); }],
   ]) {
     const altered = structuredClone(entries); mutate(altered);
-    assert(!(await post({ action: 'verify', entries: altered })).ok, label);
+    assert(!(await post({ action: 'verify', hashScheme, entries: altered })).ok, label);
+  }
+  const otherScheme = hashScheme === SHA_SCHEME ? POSEIDON_SCHEME : SHA_SCHEME;
+  const reinterpreted = structuredClone(entries);
+  for (const entry of reinterpreted) entry.hashScheme = otherScheme;
+  assert(!(await post({ action: 'verify', hashScheme: otherScheme, entries: reinterpreted })).ok, 'signed enrollment cannot be reinterpreted under another hash scheme');
+  if (hashScheme === POSEIDON_SCHEME) {
+    assert(config.root === null, 'Rust returns verified original entries without a supplied Poseidon checkpoint');
+    const invalidKeys = holders.map(h => ({ accountKey: hex(h.raw), secretHash: hex(h.secretHash) }));
+    invalidKeys[0].secretHash = hex(be(FR_MODULUS, 32));
+    assert(!(await post({ action: 'enroll', hashScheme, keys: invalidKeys })).ok, 'native enrollment rejects noncanonical Poseidon field');
+    let rejected = false;
+    try { fieldValue(be(FR_MODULUS, 32)); } catch { rejected = true; }
+    assert(rejected, 'JS hash adapter rejects field-modulus encoding');
+    const id = holders[0].id;
+    const number = BigInt('0x' + hex(id));
+    const alias = be(number + FR_MODULUS < 1n << 256n ? number + FR_MODULUS : number - FR_MODULUS, 32);
+    assert(limbs32(id).some((v, i) => v !== limbs32(alias)[i]), 'bytes32 identifiers retain distinct limbs despite field-modulus congruence');
+    const originalLeaf = await leaf(community, id, holders[0].raw, holders[0].secretHash, 80, 1000);
+    const aliasLeaf = await leaf(community, alias, holders[0].raw, holders[0].secretHash, 80, 1000);
+    assert(hex(originalLeaf) !== hex(aliasLeaf), 'commitment binds full identifier above the field modulus');
   }
   const path = i => [leaves[i ^ 1], branches[(i >> 1) ^ 1]];
   const noir = new Noir(circuit);
-  async function witness(ownerIndex, peerIndex, role, kind, issued = 100) {
+  async function witness(ownerIndex, peerIndex, role, kind, issued = 100, nonceOverride) {
     const owner = holders[ownerIndex], peer = holders[peerIndex];
-    const nonce = random(), group = random(), oldBlind = random(), newBlind = random();
+    const nonce = nonceOverride ?? random(), group = random(), oldBlind = random(), newBlind = random();
     const balance = 7, reserved = 2; // Synthetic opening, not product policy.
     const responder = role === 0 ? peer : owner, other = role === 0 ? owner : peer;
     const signature = canonicalSignature(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, responder.key.privateKey,
       receiptBytes(community, responder.id, other.id, nonce, group, kind, issued)));
     return {
-      community, enrollment_root: unhex(config.root), owner: owner.id,
+      community, enrollment_root: checkpoint.root, owner: owner.id,
       old_state: await state(community, owner.id, owner.secretHash, balance, role, peer.id, nonce, group, reserved, oldBlind),
       new_state: await state(community, owner.id, owner.secretHash, balance + reserved, 0, zeros(), zeros(), zeros(), 0, newBlind),
       spent_marker: await marker(community, owner.secret, owner.id, peer.id, nonce), now: 100,
@@ -93,6 +132,14 @@ async function main() {
     ['changed replay marker', v => { v.spent_marker[0] ^= 1; }],
     ['expired enrollment', v => { v.now = 1000; }],
   ];
+  if (hashScheme === POSEIDON_SCHEME) {
+    negative.push(['noncanonical field sibling', v => { v.peer_path[0] = be(FR_MODULUS, 32); }]);
+    negative.push(['noncanonical secret commitment', v => { v.peer_secret_hash = be(FR_MODULUS, 32); }]);
+    negative.push(['field-congruent hidden identity substitution', v => {
+      const id = BigInt('0x' + hex(v.peer));
+      v.peer = be(id + FR_MODULUS < 1n << 256n ? id + FR_MODULUS : id - FR_MODULUS, 32);
+    }]);
+  }
   for (const [label, mutate] of negative) {
     const value = structuredClone(valid); mutate(value);
     let rejected = false; try { await noir.execute(circuitInput(value)); } catch { rejected = true; }
@@ -115,19 +162,16 @@ async function main() {
     let rejected = false; try { await noir.execute(circuitInput(value)); } catch { rejected = true; }
     assert(rejected, label);
   }
-  stage('initialize-browser-prover');
-  assert(manifest.wasm?.length === 1 && manifest.wasm[0].name === 'barretenberg-threads.wasm', 'manifest pins only the selected shared-memory binary');
-  for (const record of manifest.wasm) {
-    const data = await bytes('/' + record.name);
-    assert(data.length === record.bytes && hex(await sha(data)) === record.sha256, 'pinned same-origin WASM ' + record.name);
+  if (hashScheme === POSEIDON_SCHEME) {
+    // The signature genuinely authenticates the changed nonce; only exact
+    // commitment/event linkage can reject a mistaken whole-field reduction.
+    const value = await witness(0, 1, 0, 1, 100, be(7, 32));
+    value.nonce = be(FR_MODULUS + 7n, 32);
+    value.signature = canonicalSignature(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, holders[1].key.privateKey,
+      receiptBytes(community, holders[1].id, holders[0].id, value.nonce, value.group, value.kind, value.issued)));
+    let rejected = false; try { await noir.execute(circuitInput(value)); } catch { rejected = true; }
+    assert(rejected, 'genuinely re-signed field-congruent nonce cannot reuse old state or event marker');
   }
-  const verificationKey = await bytes('/vk.bin');
-  assert(hex(await sha(verificationKey)) === manifest.vkSha256, 'browser verifier uses the pinned build verification key');
-  const api = await Barretenberg.new({ backend: BackendType.WasmWorker, threads: 1, skipSrsInit: true,
-    // The pinned browser loader inserts '-threads' when shared memory is
-    // available, resolving this base path to /barretenberg-threads.wasm.
-    wasmPath: '/barretenberg.wasm', memory: { initial: 2048, maximum: 32768 } });
-  try {
     const setup = {};
     for (const record of manifest.setup) {
       const data = await bytes('/setup/' + record.name);

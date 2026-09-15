@@ -60,8 +60,12 @@ not a drop-in social accounting implementation. [Zcash protocol](https://zips.z.
 1. **Owner and eligibility.** The public owner equals the permanent
    community-scoped root-derived ID. Prove possession of its registered accounting
    authority and valid delegation, not merely knowledge of somebody's public
-   credential. Every hidden counterpart is currently eligible under the pinned
-   common checkpoint and has a different permanent ID. An eligibility issuer's
+   credential. New reservations require a currently eligible, distinct permanent
+   counterpart under the pinned common checkpoint. Later recipient-owned closure
+   uses the authenticated reservation's historical peer eligibility: a silent
+   peer's expired membership must not prevent the recipient resolving its own
+   obligation. Verify the actual receipt signer's authority as specified below.
+   An eligibility issuer's
    signature alone cannot register a replacement device/accounting key under
    an existing member root.
 
@@ -185,6 +189,12 @@ setup parameters and verifier; review transitive licensing before adoption.
 existing proof-friendly signature and Noir/Barretenberg**, isolated from production
 `resolve_private`. This tests the hidden-owner/receipt equality bottleneck with
 available browser proving machinery before building a complete controller.
+
+The [isolated executable spike](../experiments/private-accounting/README.md)
+now selects Noir's built-in P-256 verifier and browser WebCrypto signing for
+the smallest supported signature integration. It retains the explicit delegated
+authority boundary; successful compilation or proving must still be evidenced
+by CI, and does not complete this acceptance relation.
 
 1. Add an experimental public enrollment binding from the actual cmsg
    root-authorized device to an accounting public key. Verify every original

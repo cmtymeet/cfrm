@@ -8,6 +8,7 @@ variables:
   CARGO_TARGET_DIR: {default: ""}
   BROWSER_BIN: {default: ""}
   RESOLVE_DEPENDENCIES: {default: "0"}
+  RESOLVE_SETUP: {default: "0"}
 steps:
   - name: verified-source
     image: bash

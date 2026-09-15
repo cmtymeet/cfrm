@@ -49,6 +49,7 @@ export async function verifyResults(result, enrolled) {
       changed.publicInputs[position] = '0x' + ((BigInt(changed.publicInputs[position]) + 1n) % 256n).toString(16).padStart(64, '0');
       check(await rejects(changed), 'independent verifier rejects changed ' + label);
     }
+    check(await verifier.verifyProof(valid, OPTIONS), 'independent verifier still accepts valid proof after malformed inputs');
     // A deliberately synthetic single-owner ledger fixture begins at each
     // scenario's already reserved commitment. It does NOT prove production genesis.
     const states = new Map(proofs.map(p => [p.owner, p.old]));

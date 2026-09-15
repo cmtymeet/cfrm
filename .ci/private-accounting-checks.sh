@@ -41,13 +41,18 @@ if test "${RESOLVE_DEPENDENCIES:-0}" = 1; then
 fi
 test -f package-lock.json
 test -f native/Cargo.lock
-timeout 600 npm ci --ignore-scripts --no-audit --no-fund \
+# Both configured CI executors are Linux x86_64 with glibc. Pin that optional
+# binary selection: the bundler's autodetection selects musl on this Nix worker.
+test "$(uname -s)" = Linux
+test "$(uname -m)" = x86_64
+timeout 600 npm ci --libc=glibc --ignore-scripts --no-audit --no-fund \
   2>&1 | tee "$artifact_dir/npm-install.log"
 timeout 1200 cargo build --locked --manifest-path native/Cargo.toml --release \
   2>&1 | tee "$artifact_dir/native-build.log"
 cargo fmt --manifest-path native/Cargo.toml
 tar --create --file "$artifact_dir/formatted-native-source.tar" native/src
-timeout 900 npm run build 2>&1 | tee "$artifact_dir/browser-build.log"
+CFRM_BUNDLER_BINDING="$PWD/node_modules/@rolldown/binding-linux-x64-gnu" \
+  timeout 900 npm run build 2>&1 | tee "$artifact_dir/browser-build.log"
 export ACCOUNTING_FIXTURE="$CARGO_TARGET_DIR/release/cfrm-private-accounting-fixture"
 export BROWSER_EVIDENCE="$artifact_dir/browser-evidence.json"
 export ACCOUNTING_ARTIFACT_DIR="$artifact_dir"

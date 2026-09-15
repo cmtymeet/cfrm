@@ -1,9 +1,9 @@
 // Run only on the existing CI worker. Project dependencies, no tool installation.
 import { compile, createFileManager } from '@noir-lang/noir_wasm';
 import { Barretenberg, BackendType, UltraHonkBackend } from '@aztec/bb.js';
-import { build } from 'vite';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 import { OPTIONS } from './common.mjs';
@@ -25,7 +25,7 @@ try {
   if (!Number.isSafeInteger(numPoints) || numPoints > 2 ** 20 + 1) throw new Error('Circuit exceeds bounded setup spike');
   let locked;
   try { locked = JSON.parse(await readFile('setup-lock.json', 'utf8')); }
-  catch (error) { if (error.code !== 'ENOENT' || process.env.RESOLVE_DEPENDENCIES !== '1') throw error; }
+  catch (error) { if (error.code !== 'ENOENT' || process.env.RESOLVE_SETUP !== '1') throw error; }
   const specs = [
     { name: 'g1.dat', url: 'https://crs.aztec-cdn.foundation/g1_compressed.dat', bytes: numPoints * 32, range: true },
     { name: 'g2.dat', url: 'https://crs.aztec-cdn.foundation/g2.dat', bytes: 128, range: false },
@@ -58,10 +58,29 @@ try {
     numPoints, g2Point: new Uint8Array(await readFile('public/setup/g2.dat')) });
   const vk = await new UltraHonkBackend(compiled.program.bytecode, api).getVerificationKey(OPTIONS);
   await writeFile('public/vk.bin', vk);
+  // The upstream browser bundle defaults to fetching an embedded data: URL.
+  // Serve the pinned package's real WASM locally to retain connect-src 'self'.
+  const backendDir = dirname(fileURLToPath(import.meta.resolve('@aztec/bb.js')));
+  const wasm = [];
+  for (const name of ['barretenberg', 'barretenberg-threads']) {
+    const data = gunzipSync(await readFile(resolve(backendDir, 'barretenberg_wasm', name + '.wasm.gz')));
+    await writeFile('public/' + name + '.wasm', data);
+    wasm.push({ name: name + '.wasm', bytes: data.length, sha256: hash(data) });
+  }
   const manifest = { version: 1, compiler: '1.0.0-beta.26', backend: '5.0.0', verifierTarget: OPTIONS.verifierTarget,
     circuitSha256: hash(await readFile('public/circuit.json')), vkSha256: hash(vk),
-    circuitSourceSha256: hash(await readFile('circuit/src/main.nr')), numPoints, setup,
+    circuitSourceSha256: hash(await readFile('circuit/src/main.nr')), numPoints, setup, wasm,
     compileAndSetupMs: performance.now() - started, stats, threads: 1, maximumWasmBytes: 32768 * 65536 };
   await writeFile('public/manifest.json', JSON.stringify(manifest, null, 2));
 } finally { await api.destroy(); }
-await build();
+// Rolldown's supported override bypasses incorrect libc detection on the known
+// GNU CI host. Scope it to bundling, after the proof backend has been destroyed.
+const previousBinding = process.env.NAPI_RS_NATIVE_LIBRARY_PATH;
+try {
+  if (process.env.CFRM_BUNDLER_BINDING) process.env.NAPI_RS_NATIVE_LIBRARY_PATH = resolve(process.env.CFRM_BUNDLER_BINDING);
+  const { build } = await import('vite');
+  await build();
+} finally {
+  if (previousBinding === undefined) delete process.env.NAPI_RS_NATIVE_LIBRARY_PATH;
+  else process.env.NAPI_RS_NATIVE_LIBRARY_PATH = previousBinding;
+}

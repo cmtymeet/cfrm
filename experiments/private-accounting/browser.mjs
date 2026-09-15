@@ -116,8 +116,12 @@ async function main() {
     assert(rejected, label);
   }
   stage('initialize-browser-prover');
+  for (const record of manifest.wasm) {
+    const data = await bytes('/' + record.name);
+    assert(data.length === record.bytes && hex(await sha(data)) === record.sha256, 'pinned same-origin WASM ' + record.name);
+  }
   const api = await Barretenberg.new({ backend: BackendType.WasmWorker, threads: 1, skipSrsInit: true,
-    memory: { initial: 2048, maximum: 32768 } });
+    wasmPath: '/barretenberg.wasm', memory: { initial: 2048, maximum: 32768 } });
   try {
     const setup = {};
     for (const record of manifest.setup) {

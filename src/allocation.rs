@@ -147,10 +147,14 @@ impl AllocationLedger {
         let remaining_credits = credits.checked_sub(1).ok_or(Error::NoAllowance)?;
         let blinded = BASE64URL_NOPAD.decode(request.blinded_request.as_bytes()).map_err(|_| Error::InvalidInput)?;
         let response = issue(&transaction, &blinded, now)?;
+        // A provider operation may be slow. Recheck before persisting its result.
+        let completed_at = clock();
+        if completed_at < now || completed_at > MAX_INTEGER { return Err(Error::ClockRollback); }
+        if completed_at >= request.expires_at || completed_at >= grant.expires_at || completed_at >= authorization.expires_at { return Err(Error::Expired); }
         transaction.execute("INSERT INTO cfrm_allocation_members(member,credits,last_period) VALUES(?1,?2,?3) ON CONFLICT(member) DO UPDATE SET credits=excluded.credits,last_period=excluded.last_period", params![request.member_id,sql_integer(remaining_credits)?,sql_integer(period)?])?;
         transaction.execute("INSERT INTO cfrm_allocation_reservations(member,nonce,request_digest,remaining) VALUES(?1,?2,?3,?4)", params![request.member_id,request.nonce,request_digest,sql_integer(remaining_credits)?])?;
         transaction.execute("INSERT INTO cfrm_allocation_responses(member,nonce,response) VALUES(?1,?2,?3)", params![request.member_id,request.nonce,response])?;
-        transaction.execute("UPDATE cfrm_allocation_config SET clock_floor=?1 WHERE singleton=1", [sql_integer(now)?])?;
+        transaction.execute("UPDATE cfrm_allocation_config SET clock_floor=?1 WHERE singleton=1", [sql_integer(completed_at)?])?;
         transaction.commit()?;
         Ok((Reservation { request_digest, remaining_credits }, response))
     }

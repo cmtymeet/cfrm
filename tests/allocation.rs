@@ -96,3 +96,20 @@ fn copied_eligibility_does_not_authorize_a_member_owned_budget() {
     assert_eq!(ledger.reserve(&f.grant(5,&attacker),&forged,&request(&f,&attacker,10,110),||110),Err(Error::Admission));
     assert_eq!(ledger.balance(&member_id(5)).unwrap(),None);
 }
+
+#[test]
+fn invalid_persisted_sql_integers_fail_closed() {
+    for mutation in [
+        "UPDATE cfrm_allocation_config SET clock_floor=-1",
+        "UPDATE cfrm_allocation_config SET clock_floor=9007199254740992",
+        "UPDATE cfrm_allocation_members SET credits=9007199254740992",
+        "UPDATE cfrm_allocation_members SET credits=4",
+        "UPDATE cfrm_allocation_members SET last_period=-1",
+    ] {
+        let f=Fixture::new(); let dir=tempfile::tempdir().unwrap(); let path=dir.path().join("state.sqlite");
+        let mut ledger=AllocationLedger::open(&path,f.trust.clone(),policy()).unwrap();
+        ledger.reserve(&f.grant(5,&f.device),&f.authorize(5,&f.device),&request(&f,&f.device,10,110),||110).unwrap();
+        rusqlite::Connection::open(&path).unwrap().execute(mutation,[]).unwrap();
+        assert_eq!(ledger.reserve(&f.grant(5,&f.device),&f.authorize(5,&f.device),&request(&f,&f.device,11,110),||110),Err(Error::Storage));
+    }
+}

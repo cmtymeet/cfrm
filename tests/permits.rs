@@ -151,3 +151,17 @@ fn bare_reservations_cannot_be_upgraded_to_signatures_and_bad_reply_stays_invali
     assert_eq!(ledger.balance(&member_id(5)).unwrap(), Some(1));
     assert!(matches!(prepared.finalize(&[1; 384], 110), Err(Error::Signature)));
 }
+
+#[test]
+fn expiry_after_private_signing_rolls_back_signature_debit_and_epoch_registration() {
+    let f = Fixture::new(); let epoch = epoch(); let issuer = PermitIssuer::from_pkcs1_der(&epoch, key_der()).unwrap();
+    let mut ledger = AllocationLedger::open(":memory:", f.trust.clone(), policy()).unwrap();
+    let prepared = PreparedPermit::new(&epoch, 110).unwrap(); let request = request(&f, &f.device, &prepared.issuance_request(), 10);
+    let calls = std::cell::Cell::new(0); let clock = || { let call = calls.get(); calls.set(call + 1); if call < 2 { 110 } else { 150 } };
+    assert_eq!(issuer.issue(&mut ledger, &f.grant(5, &f.device), &f.authorize(5, &f.device), &request, clock), Err(Error::Expired));
+    assert_eq!(ledger.balance(&member_id(5)).unwrap(), None);
+    // Nothing escaped on the failed attempt. Its nonce remains available.
+    let response = issuer.issue(&mut ledger, &f.grant(5, &f.device), &f.authorize(5, &f.device), &request, || 110).unwrap();
+    prepared.finalize(&response.blind_signature, 110).unwrap();
+    assert_eq!(ledger.balance(&member_id(5)).unwrap(), Some(1));
+}

@@ -119,7 +119,10 @@ impl PermitRedeemer {
                 stamp
             },
         };
-        transaction.execute("UPDATE cfrm_redemption_config SET clock_floor=?1 WHERE singleton=1", [sql_integer(now)?])?;
+        let completed_at = clock();
+        if completed_at < now || completed_at > MAX_INTEGER { return Err(Error::ClockRollback); }
+        self.epoch.check_time(completed_at, false)?;
+        transaction.execute("UPDATE cfrm_redemption_config SET clock_floor=?1 WHERE singleton=1", [sql_integer(completed_at)?])?;
         transaction.commit()?;
         Ok(stamp)
     }

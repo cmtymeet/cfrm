@@ -17,6 +17,7 @@ variables:
   ACCOUNT_POLICY_JSON: {default: ""}
   CMSG_SOURCE_ARCHIVE: {default: ""}
   CMSG_SOURCE_SHA256: {default: ""}
+  CMSG_CARGO_TARGET_DIR: {default: ""}
 steps:
   - name: verified-source
     image: bash

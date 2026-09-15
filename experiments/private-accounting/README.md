@@ -5,6 +5,11 @@ audit, Tor transport test or mobile performance claim.** Production
 `AllocationLedger::resolve_private` still fails closed. See the
 [required full proof relation](../../docs/private-accounting.md).
 
+The separately versioned [account-state foundation](account-state/README.md)
+adds proved genesis, authenticated maps and real cmsg receipt/acknowledgment
+bindings. It is a source candidate awaiting runtime verification; measurements
+below describe only the original settlement modes.
+
 ## What this proves
 
 The [baseline Noir circuit](circuit/src/main.nr) and separately versioned

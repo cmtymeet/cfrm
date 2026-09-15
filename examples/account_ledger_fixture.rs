@@ -28,6 +28,7 @@ struct Checkpoint { slot: u64, root: [u8;32] }
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
 enum Input {
     Prepare { request: AccountRequest },
+    Verify { statement: AccountStatement, proof: Vec<u8> },
     Apply { grant: AdmissionGrant, authorization: DeviceAuthorization, request: AccountRequest, now: u64 },
     Status { grant: AdmissionGrant, authorization: DeviceAuthorization, request: AccountStatusRequest, now: u64 },
 }
@@ -41,7 +42,7 @@ impl AccountProofVerifier for RealProcessVerifier {
         // GNU timeout is a declared test-runner dependency. No shell or browser
         // field is interpreted as executable text. The process has only public
         // inputs; witness openings remain in the browser.
-        let mut child = Command::new("timeout").args(["--kill-after=5", "120", "node"])
+        let mut child = Command::new("timeout").args(["--foreground", "--kill-after=5", "120", "node"])
             .arg(&self.script).arg(&self.manifest).arg(&self.enrollment)
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit())
             .spawn().map_err(|_| Error::CryptoProvider)?;
@@ -83,6 +84,10 @@ fn run() -> Result<Value, Box<dyn std::error::Error>> {
     let verifier = RealProcessVerifier { scope: config.proof_scope,
         script: std::fs::canonicalize(&args[3])?, manifest: std::fs::canonicalize(&args[4])?,
         enrollment: std::fs::canonicalize(&args[5])? };
+    if let Input::Verify { statement, proof } = command {
+        verifier.verify(&statement, &proof)?;
+        return Ok(json!({ "verified": true }));
+    }
     let trust = AdmissionTrust { community_id: config.community_id,
         policy_digest: config.admission_policy_digest, issuer_public_key: config.issuer_public_key };
     let mut ledger = AccountLedger::open(&args[2], trust, config.policy, verifier,
@@ -91,7 +96,7 @@ fn run() -> Result<Value, Box<dyn std::error::Error>> {
     let result = match command {
         Input::Apply { grant, authorization, request, now } => serde_json::to_value(ledger.apply(&grant, &authorization, &request, || now)?),
         Input::Status { grant, authorization, request, now } => serde_json::to_value(ledger.status(&grant, &authorization, &request, || now)?),
-        Input::Prepare { .. } => unreachable!(),
+        Input::Prepare { .. } | Input::Verify { .. } => unreachable!(),
     }?;
     if args.len() == 8 { std::process::exit(0); } // Commit survived; response deliberately lost.
     Ok(result)

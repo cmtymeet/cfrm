@@ -1,0 +1,7 @@
+schema = 1
+
+[archives.cmsg]
+revision = "90dfb3a77070a3f14bc2283834fa0d3188aab68c"
+archive_variable = "CMSG_SOURCE_ARCHIVE"
+digest_variable = "CMSG_SOURCE_SHA256"
+workflows = ["private-accounting"]

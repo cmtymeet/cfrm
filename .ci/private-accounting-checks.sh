@@ -116,14 +116,19 @@ if test "$ACCOUNTING_MODE" = account-state-v1; then
   cmsg_source="$PWD/.cmsg-source"
   mkdir -p "$cmsg_source"
   tar --extract --touch --file "$CMSG_SOURCE_ARCHIVE" --directory "$cmsg_source" --no-same-owner
-  timeout 1200 cargo build --locked --manifest-path "$cmsg_source/Cargo.toml" --release --example accounting_fixture \
+  test -n "$CMSG_CARGO_TARGET_DIR"
+  mkdir -p "$CMSG_CARGO_TARGET_DIR"
+  # Reuse the cmsg dependency cache already validated by its portable suite.
+  # The fixture is not benchmarked; a release rebuild adds no relevant evidence.
+  CARGO_TARGET_DIR="$CMSG_CARGO_TARGET_DIR" flock "$CMSG_CARGO_TARGET_DIR.ci.lock" \
+    timeout 1200 cargo build --locked --manifest-path "$cmsg_source/Cargo.toml" --example accounting_fixture \
     2>&1 | tee "$artifact_dir/cmsg-fixture-build.log"
   cp "$cmsg_source/Cargo.lock" "$artifact_dir/cmsg-Cargo.lock"
   printf '%s\n' "$cmsg_revision" > "$artifact_dir/cmsg-source-revision.txt"
   printf '%s\n' "$CMSG_SOURCE_SHA256" > "$artifact_dir/cmsg-source-archive.sha256"
   timeout 1200 cargo build --locked --manifest-path ../../Cargo.toml --no-default-features --features sqlite \
     --release --example account_ledger_fixture 2>&1 | tee "$artifact_dir/ledger-fixture-build.log"
-  export ACCOUNTING_FIXTURE="$CARGO_TARGET_DIR/release/examples/accounting_fixture"
+  export ACCOUNTING_FIXTURE="$CMSG_CARGO_TARGET_DIR/debug/examples/accounting_fixture"
   export ACCOUNTING_LEDGER_FIXTURE="$CARGO_TARGET_DIR/release/examples/account_ledger_fixture"
   test -x "$ACCOUNTING_LEDGER_FIXTURE"
   sha256sum "$ACCOUNTING_LEDGER_FIXTURE" > "$artifact_dir/ledger-fixture.sha256"
@@ -138,9 +143,19 @@ else
 fi
 CFRM_BUNDLER_BINDING="$PWD/node_modules/@rolldown/binding-linux-x64-gnu" \
   timeout 900 npm run build 2>&1 | tee "$artifact_dir/browser-build.log"
-export BROWSER_EVIDENCE="$artifact_dir/browser-evidence.json"
-export ACCOUNTING_ARTIFACT_DIR="$artifact_dir"
 export BROWSER_BIN
 test -x "$ACCOUNTING_FIXTURE"
 sha256sum "$ACCOUNTING_FIXTURE" > "$artifact_dir/native-fixture.sha256"
-timeout --kill-after=15 1200 npm test 2>&1 | tee "$artifact_dir/browser-harness.log"
+if test "$ACCOUNTING_MODE" = account-state-v1; then
+  for scenario in answer close; do
+    export ACCOUNT_SCENARIO="$scenario"
+    export ACCOUNTING_ARTIFACT_DIR="$artifact_dir/$scenario"
+    mkdir -p "$ACCOUNTING_ARTIFACT_DIR"
+    export BROWSER_EVIDENCE="$ACCOUNTING_ARTIFACT_DIR/browser-evidence.json"
+    timeout --kill-after=15 1200 npm test 2>&1 | tee "$ACCOUNTING_ARTIFACT_DIR/browser-harness.log"
+  done
+else
+  export BROWSER_EVIDENCE="$artifact_dir/browser-evidence.json"
+  export ACCOUNTING_ARTIFACT_DIR="$artifact_dir"
+  timeout --kill-after=15 1200 npm test 2>&1 | tee "$artifact_dir/browser-harness.log"
+fi

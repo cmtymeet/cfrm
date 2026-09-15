@@ -35,7 +35,7 @@ fixture explicitly begins at the scenarios' already reserved commitments and
 tests compare-and-swap/replay behavior only after real proof verification. It
 does not implement production genesis or account recovery. The current
 [SQLite storage contract](ledger.md) adds bounded process-restart and transaction
-tests; it is source-reviewed and awaits CI. Duplicate
+tests; it passed Crow run 42 as detailed below. Duplicate
 identity rejection in the native fixture tests enrollment uniqueness, not a
 zero-knowledge genesis proof.
 
@@ -207,7 +207,7 @@ Both verifiers use Barretenberg, so this is not implementation diversity.
 The measurements recorded through run 41 use synchronous in-memory
 compare-and-swap. The current [SQLite replacement](ledger.md) races independent
 processes using an actually verified successor and tests exact retries, lost
-responses and transactional rollback. It awaits execution; this does not claim
+responses and transactional rollback. It passed run 42; this does not claim
 concurrent independent device proving or distributed ledger consensus. The
 two proofs concern different random events. Their unequal markers, and a
 separate same-nonce/opposite-owner hash comparison, do not measure traffic
@@ -359,6 +359,25 @@ unchanged and no forbidden requests or browser errors were recorded.
 This checks compatibility of the shared glue in both modes and supplies a closer
 comparison than separate source revisions. It remains two warmed proofs per
 mode, without repeated trials, controlled host load or target-mobile evidence.
+
+### Durable storage checkpoint: Crow 9/42
+
+Source `0ef6fb410ad356ff483be49b7da45da3be9ed623` passed **51 browser
+checks and 54 independent-process checks**, including 37 labeled storage
+checks. The [SQLite contract](ledger.md) exercised actual verifier-accepted
+statements, exact cached retries, mutation rejection, transaction rollback,
+process exit after commit, and two independent processes competing for one
+successor. Synthetic genesis and the immutable checkpoint scope remain limits.
+Production private accounting is unchanged and remains disabled.
+
+The Poseidon circuit source, verification key, gate count and setup matched
+run 40. This run measured proving at 7.32/7.05 seconds, browser verification at
+43.21/34.60 ms, and 117.18 ms for the storage contract. Sampled Chromium-family
+PSS reached 986,747,904 bytes (941.0 MiB): 103/116 complete samples, 13 incomplete,
+maximum gap 201.00 ms. Loaded bytes were 41,997,928. Run-to-run time and memory
+variation reinforces that these are individual shared-host observations,
+not guaranteed performance or mobile feasibility. Storage checks occur after
+browser proving and are outside the browser-family memory scope.
 
 ## Required work beyond this spike
 

@@ -40,8 +40,10 @@ is immutable in this fixture; real checkpoint, key and policy evolution needs
 continuity rather than another seed. Production `resolve_private` remains
 unsupported.
 
-This demonstrates local transaction and process-restart behavior when executed
-by CI. It does not establish distributed consensus, power-loss durability,
+Crow **9/42**, source `0ef6fb410ad356ff483be49b7da45da3be9ed623`,
+passed all 37 storage checks alongside actual browser proofs and independent
+verification. This demonstrates the tested local transaction and process-restart
+behavior. It does not establish distributed consensus, power-loss durability,
 honest storage administrators or protection against restoring an entire old
 database. The temporary ledger is deleted after the contract; only its labeled
 public test results enter the report. Browser memory samples exclude these

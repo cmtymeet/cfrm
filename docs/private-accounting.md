@@ -273,3 +273,14 @@ These shared-host runs establish compatibility, not stable performance gains or
 mobile suitability. The unchanged setup floor remains 524,288 points.
 This namespace change is not a migration
 path for existing states/markers, and the composition has no audit claim.
+
+
+The [durable SQLite experiment](../experiments/private-accounting/ledger.md)
+passed Crow 9/42 at `0ef6fb410ad356ff483be49b7da45da3be9ed623`: 37 storage
+checks within 54 independent-process checks, alongside 51 browser checks.
+Actual verified statements drive retry, rollback, lost-response and competing
+process tests. Genesis remains synthetic; versions and immutable checkpoint
+scope are storage guards, not a complete private account relation. The same
+circuit measured 7.32/7.05-second proving and 941.0 MiB sampled browser PSS in
+this run, illustrating substantial run-to-run resource variation. Full private
+accounting remains disabled.

@@ -69,7 +69,10 @@ publishes a checkpoint and commits. Competing state updates, shared clock
 advancement and expiry are rechecked when the paused verifier finishes.
 
 Those tests deliberately use a synthetic verifier to isolate the storage
-contract. They are not cryptographic acceptance evidence. The separate browser
-account-state integration invokes the real pinned proof backend through
-[account_ledger_fixture](../examples/account_ledger_fixture.rs); its execution
-and measurements must be recorded independently before claiming it passed.
+contract. They are not cryptographic acceptance evidence. The separate
+[account-state integration](../experiments/private-accounting/account-state/README.md)
+invokes the real pinned backend through
+[account_ledger_fixture](../examples/account_ledger_fixture.rs). Answer passed
+with the recorded browser proofs and corrected ledger on Crow 9/49; Close passed
+with fresh browser proofs on Crow 9/50. Their source pins, check counts and
+substantial browser resource costs are recorded separately.

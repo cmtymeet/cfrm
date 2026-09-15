@@ -1,6 +1,7 @@
 # Peer reservation proof foundation
 
-**Uncompiled, unintegrated source candidate.** No browser proof or operator
+**Compiled, unintegrated source candidate.** Crow 9/51 compiled the relation at
+`0ae9b897490bd48810b89fcc561e9e04128a80bc`. No browser proof or operator
 acceptance interoperability result is claimed for this circuit. The measured
 account-state runs use a different relation. Production private accounting and
 protected release remain disabled.
@@ -40,7 +41,7 @@ state and presentation field outputs require canonical BN254 encoding.
 `createPeerVerifier()` receives locally pinned peer and account circuit/VK
 digests, exact compiled circuit/VK bytes and the host's actual
 `verifyAccountAcceptance(certificate)` adapter. This adapter must invoke
-`cfrm::verify_account_acceptance` under a pinned operator key and return `true`
+`cfrm::accounting::verify_account_acceptance` under a pinned operator key and return `true`
 only on success. There is no default verifier. An arbitrary success callback
 would bypass that required trust boundary; it is not a supported substitute.
 
@@ -109,7 +110,8 @@ resolver, writing compiled JSON and source hashes to the mandatory separate
 output directory. Only pinned `p2hash` is a dependency; no SHA or signature
 circuit is required. It does not fetch setup or prove. Subsequent circuit stats
 and VK also need a **separate peer artifact namespace**. No existing build
-selector has been changed.
+selector is required for this command. The shared CI also supports
+`CHECK_PHASE=compile CIRCUIT_PACKAGE=peer-reservation`.
 
 `runPeerReservationContract()` in `browser.mjs` is callable once the host has:
 
@@ -130,8 +132,8 @@ Integration still needs new driver IPC to obtain the real acceptance **while
 the browser retains its private opening**, plus browser/Rust and independent
 Node acceptance-verification adapters. Existing account browser results do not
 retain openings outside the page. Do not serialize witnesses to the driver or
-replace this step with a synthetic acceptance. No shared build, browser driver,
-account transition or ledger source was changed by this foundation.
+replace this step with a synthetic acceptance. The existing account browser,
+account transition and ledger implementations are unchanged by this candidate.
 
 See [the reservation protocol](../../../docs/private-reservation-protocol.md)
 for the two-sided release and durable recovery requirements. Circuit cost,

@@ -139,8 +139,15 @@ Crow 9/49 at that corrected source reused the hash-verified run 46 public proofs
 and retained native enrollment. All 18 real Rust integration checks passed,
 including independent-process contention, durable acceptance, process exit
 after commit, expired exact retry and malformed-proof rejection. This replay
-did not rerun the browser or receive private witnesses. Close validation is
-recorded separately when complete.
+did not rerun the browser or receive private witnesses.
+
+Crow 9/50 at `1b404017b9bde8cffe9c27efff76bb8c275057b7` passed the separate
+Close flow: eight real browser proofs, 69 browser checks, 18 independent Node
+checks and 17 real Rust ledger checks. The recipient settled after the silent
+sender's credentials expired. The additional outgoing obligation remained
+reserved. This run measured 26.4–27.5 seconds per proof and sampled PSS of
+1,203,539,968 bytes (~1.12 GiB), with 1212/1238 complete samples and a maximum
+271 ms sampling gap. It used the same circuit/VK and synthetic policy as Answer.
 
 The circuit has 319,319 gates, padded to 524,288. Run 46 measured 26.4–27.4 seconds
 per proof, 14,656 bytes per proof and 46,599,980 loaded bytes. Sampled Chromium-family

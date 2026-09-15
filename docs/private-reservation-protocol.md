@@ -5,7 +5,7 @@
 This extends the requirements in [Private reciprocal accounting](private-accounting.md)
 and the [account-state foundation](../experiments/private-accounting/account-state/README.md).
 The foundation implements proved empty genesis, both reservation maps, activation,
-settlement and a [durable Rust ledger](account-ledger.md). Its Answer flow has
+settlement and a [durable Rust ledger](account-ledger.md). Its Answer and Close flows have
 passed with real cmsg signatures and browser proofs. Peer presentations,
 protected release, complete recovery and numerical policy are still separate
 work. Production `resolve_private` remains `UnsupportedCapability`.

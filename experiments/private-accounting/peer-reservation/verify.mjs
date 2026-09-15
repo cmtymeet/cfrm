@@ -51,7 +51,7 @@ export async function validateAcceptedContext(record, trusted, verifyAccountAcce
       || now >= BigInt(trusted.accountPolicy.policyValidUntil)) throw new Error('Wrong or expired common policy');
   if (typeof verifyAccountAcceptance !== 'function') throw new Error('Real operator acceptance verifier unavailable');
   // This is a host cryptography boundary, not a prover-selected callback. The
-  // adapter must call cfrm::verify_account_acceptance with the pinned operator.
+  // adapter must call cfrm::accounting::verify_account_acceptance with the pinned operator.
   if (await verifyAccountAcceptance(a) !== true) throw new Error('Invalid operator acceptance');
 }
 

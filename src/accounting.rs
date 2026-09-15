@@ -28,12 +28,20 @@ pub(crate) fn field(value: &[u8; 32], nonzero: bool) -> Result<(), Error> {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccountPolicy {
     pub initial_credit: u32,
+    /// Mature total capacity, including both available and reserved units.
     pub maximum_available: u32,
     pub outgoing_reservation: u32,
     pub incoming_reservation: u32,
     pub policy_revision: u64,
     pub policy_valid_from: u64,
     pub policy_valid_until: u64,
+    pub newcomer_period: u64,
+    pub rate_window: u64,
+    pub newcomer_admissions: u32,
+    pub maximum_admissions: u32,
+    pub refill_period: u64,
+    pub refill_units: u32,
+    pub abandon_after: u64,
 }
 
 impl AccountPolicy {
@@ -44,6 +52,20 @@ impl AccountPolicy {
             || self.incoming_reservation == 0
             || self.outgoing_reservation > self.maximum_available
             || self.incoming_reservation > self.maximum_available
+            || self.initial_credit < self.outgoing_reservation
+            || self.initial_credit < self.incoming_reservation
+            || self.newcomer_admissions == 0
+            || self.newcomer_admissions > self.maximum_admissions
+            || self.refill_units == 0
+            || self.refill_units > self.initial_credit
+            || [
+                self.newcomer_period,
+                self.rate_window,
+                self.refill_period,
+                self.abandon_after,
+            ]
+            .into_iter()
+            .any(|duration| duration == 0 || duration > MAX_INTEGER)
             || self.policy_revision == 0
             || self.policy_revision > MAX_INTEGER
             || self.policy_valid_from == 0
@@ -51,6 +73,56 @@ impl AccountPolicy {
             || self.policy_valid_until > MAX_INTEGER
         {
             return Err(Error::InvalidInput);
+        }
+        Ok(())
+    }
+
+    /// Capacity grows with permanent account age; this never issues credit.
+    /// `created_at` must come from the authenticated genesis state, never the
+    /// current device's enrollment or a caller-controlled profile timestamp.
+    pub fn capacity_at(&self, created_at: u64, now: u64) -> Result<u32, Error> {
+        self.validate_age(created_at, now)?;
+        Ok(if now - created_at < self.newcomer_period {
+            self.initial_credit
+        } else {
+            self.maximum_available
+        })
+    }
+
+    /// Both incoming and outgoing reservations consume the same window count.
+    pub fn admission_limit_at(&self, created_at: u64, now: u64) -> Result<u32, Error> {
+        self.validate_age(created_at, now)?;
+        Ok(if now - created_at < self.newcomer_period {
+            self.newcomer_admissions
+        } else {
+            self.maximum_admissions
+        })
+    }
+
+    /// All members in one rate window use the same public proof horizon.
+    /// The ledger checks this again after verification, so proving an earlier
+    /// timestamp cannot authorize a transition after its validity window.
+    pub fn proof_valid_until(&self, now: u64) -> Result<u64, Error> {
+        self.validate()?;
+        if now < self.policy_valid_from || now >= self.policy_valid_until {
+            return Err(Error::Expired);
+        }
+        let end = (now / self.rate_window + 1)
+            .checked_mul(self.rate_window)
+            .ok_or(Error::InvalidInput)?;
+        Ok(end.min(self.policy_valid_until))
+    }
+
+    fn validate_age(&self, created_at: u64, now: u64) -> Result<(), Error> {
+        self.validate()?;
+        if created_at < self.policy_valid_from || now > MAX_INTEGER {
+            return Err(Error::InvalidInput);
+        }
+        if now < created_at {
+            return Err(Error::ClockRollback);
+        }
+        if now >= self.policy_valid_until {
+            return Err(Error::Expired);
         }
         Ok(())
     }
@@ -71,11 +143,18 @@ impl AccountPolicy {
         ] {
             bytes.extend_from_slice(&value.to_be_bytes());
         }
+        bytes.extend_from_slice(&self.newcomer_period.to_be_bytes());
+        bytes.extend_from_slice(&self.rate_window.to_be_bytes());
+        bytes.extend_from_slice(&self.newcomer_admissions.to_be_bytes());
+        bytes.extend_from_slice(&self.maximum_admissions.to_be_bytes());
+        bytes.extend_from_slice(&self.refill_period.to_be_bytes());
+        bytes.extend_from_slice(&self.refill_units.to_be_bytes());
+        bytes.extend_from_slice(&self.abandon_after.to_be_bytes());
     }
 
     pub fn digest(&self, community: &[u8; 32]) -> Result<[u8; 32], Error> {
         self.validate()?;
-        let mut bytes = b"cfrm.account-policy.v1\0".to_vec();
+        let mut bytes = b"cfrm.account-policy.v2\0".to_vec();
         bytes.extend_from_slice(community);
         self.append(&mut bytes);
         bytes.push(32); // Circuit's indexed Merkle tree capacity, not a credit default.
@@ -94,6 +173,7 @@ pub struct AccountStatement {
     pub policy_digest: [u8; 32],
     pub enrollment_root: [u8; 32],
     pub now: u64,
+    pub valid_until: u64,
     pub genesis: bool,
     pub previous_version: u64,
     pub next_version: u64,
@@ -109,9 +189,10 @@ pub fn statement_bytes(value: &AccountStatement) -> Result<Vec<u8>, Error> {
     field(&value.previous_state, !value.genesis)?;
     field(&value.next_state, true)?;
     field(&value.settlement_marker, false)?;
-    if value.protocol_version != 1
+    if value.protocol_version != 2
         || value.now < value.policy.policy_valid_from
         || value.now >= value.policy.policy_valid_until
+        || value.valid_until != value.policy.proof_valid_until(value.now)?
         || value.next_version > MAX_INTEGER
         || (value.genesis
             && (value.previous_version != 0
@@ -123,7 +204,7 @@ pub fn statement_bytes(value: &AccountStatement) -> Result<Vec<u8>, Error> {
     {
         return Err(Error::InvalidInput);
     }
-    let mut bytes = b"cfrm.account.statement.v1\0".to_vec();
+    let mut bytes = b"cfrm.account.statement.v2\0".to_vec();
     bytes.extend_from_slice(&value.protocol_version.to_be_bytes());
     for digest in [
         value.community,
@@ -134,6 +215,7 @@ pub fn statement_bytes(value: &AccountStatement) -> Result<Vec<u8>, Error> {
         bytes.extend_from_slice(&digest);
     }
     bytes.extend_from_slice(&value.now.to_be_bytes());
+    bytes.extend_from_slice(&value.valid_until.to_be_bytes());
     bytes.push(u8::from(value.genesis));
     bytes.extend_from_slice(&value.previous_version.to_be_bytes());
     bytes.extend_from_slice(&value.next_version.to_be_bytes());
@@ -182,6 +264,7 @@ pub fn account_request_bytes(value: &AccountRequest) -> Result<Vec<u8>, Error> {
         || value.issued_at != value.statement.now
         || value.issued_at >= value.expires_at
         || value.expires_at > MAX_INTEGER
+        || value.expires_at > value.statement.valid_until
         || value.proof.is_empty()
     {
         return Err(Error::InvalidInput);

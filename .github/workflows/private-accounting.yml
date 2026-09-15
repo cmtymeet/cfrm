@@ -15,9 +15,9 @@ on:
         default: settlement-v1
         options:
           - settlement-v1
-          - account-state-v1
+          - account-state-v2
       account_policy_json:
-        description: Explicit seven-field AccountPolicy JSON, required for account-state-v1
+        description: Explicit fourteen-field AccountPolicy JSON, required for account-state-v2
         type: string
         default: ''
 permissions:
@@ -53,7 +53,7 @@ jobs:
           rustup default stable
           printf 'BROWSER_BIN=%s\n' "$(command -v google-chrome || command -v chromium)" >> "$GITHUB_ENV"
       - name: Stage pinned cmsg source
-        if: inputs.accounting_mode == 'account-state-v1'
+        if: inputs.accounting_mode == 'account-state-v2'
         shell: bash
         run: |
           set -euo pipefail

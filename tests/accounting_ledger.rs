@@ -91,6 +91,13 @@ fn policy() -> AccountLedgerPolicy {
             policy_revision: 1,
             policy_valid_from: 1,
             policy_valid_until: 2000,
+            newcomer_period: 100,
+            rate_window: 1000,
+            newcomer_admissions: 2,
+            maximum_admissions: 4,
+            refill_period: 100,
+            refill_units: 1,
+            abandon_after: 1000,
         },
         max_authorization_seconds: 100,
         max_proof_bytes: 20000,
@@ -123,12 +130,13 @@ fn genesis(fixture: &Fixture) -> AccountRequest {
     let account = policy().account;
     let mut request = AccountRequest {
         statement: AccountStatement {
-            protocol_version: 1,
+            protocol_version: 2,
             community,
             owner,
             policy_digest: account.digest(&community).unwrap(),
             enrollment_root: fr(8),
             now: 110,
+            valid_until: account.proof_valid_until(110).unwrap(),
             genesis: true,
             previous_version: 0,
             next_version: 0,

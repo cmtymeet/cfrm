@@ -14,18 +14,18 @@ case "$HASH_SCHEME" in
 esac
 case "$ACCOUNTING_MODE" in
   settlement-v1) ;;
-  account-state-v1)
+  account-state-v2)
     test "$HASH_SCHEME" = poseidon2-bn254-fixed-128-v1
     test -n "${ACCOUNT_POLICY_JSON:-}"
     export ACCOUNT_POLICY_JSON
-    artifact_dir="$ARTIFACT_ROOT/$CI_COMMIT_SHA/private-accounting-account-state-v1"
+    artifact_dir="$ARTIFACT_ROOT/$CI_COMMIT_SHA/private-accounting-account-state-v2"
     ;;
   *) printf 'Unknown accounting relation\n'; exit 2 ;;
 esac
 case "${CHECK_PHASE:-full}" in
   full) ;;
   compile)
-    test "$ACCOUNTING_MODE" = account-state-v1
+    test "$ACCOUNTING_MODE" = account-state-v2
     artifact_dir="$artifact_dir-compile"
     export CIRCUIT_PACKAGE="${CIRCUIT_PACKAGE:-account-state}"
     case "$CIRCUIT_PACKAGE" in
@@ -35,7 +35,7 @@ case "${CHECK_PHASE:-full}" in
     esac
     ;;
   ledger)
-    test "$ACCOUNTING_MODE" = account-state-v1
+    test "$ACCOUNTING_MODE" = account-state-v2
     test -n "${REUSE_ARTIFACT_DIR:-}"
     [[ "${REUSE_ARTIFACT_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] || exit 2
     artifact_dir="$artifact_dir-ledger"
@@ -139,7 +139,7 @@ if test "${CHECK_PHASE:-full}" = ledger; then
   exit 0
 fi
 test -x "$BROWSER_BIN"
-if test "$ACCOUNTING_MODE" = account-state-v1; then
+if test "$ACCOUNTING_MODE" = account-state-v2; then
   test -n "$CMSG_SOURCE_ARCHIVE"
   test -n "$CMSG_SOURCE_SHA256"
   printf '%s  %s\n' "$CMSG_SOURCE_SHA256" "$CMSG_SOURCE_ARCHIVE" | sha256sum --check --strict
@@ -180,7 +180,7 @@ CFRM_BUNDLER_BINDING="$PWD/node_modules/@rolldown/binding-linux-x64-gnu" \
 export BROWSER_BIN
 test -x "$ACCOUNTING_FIXTURE"
 sha256sum "$ACCOUNTING_FIXTURE" > "$artifact_dir/native-fixture.sha256"
-if test "$ACCOUNTING_MODE" = account-state-v1; then
+if test "$ACCOUNTING_MODE" = account-state-v2; then
   case "${ACCOUNT_SCENARIOS:-answer close}" in
     'answer close'|answer|close) ;;
     *) printf 'Unknown account scenarios\n'; exit 2 ;;

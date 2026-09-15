@@ -122,12 +122,12 @@ fn run() -> Result<Value, Box<dyn std::error::Error>> {
             "config database verifier manifest enrollment mode [drop-response] required".into(),
         );
     }
-    if args[6] != "account-state-v1" || (args.len() == 8 && args[7] != "drop-response") {
+    if args[6] != "account-state-v2" || (args.len() == 8 && args[7] != "drop-response") {
         return Err("invalid fixture mode".into());
     }
     let config: Config = serde_json::from_slice(&std::fs::read(&args[1])?)?;
     let manifest: Value = serde_json::from_slice(&std::fs::read(&args[4])?)?;
-    if manifest["accountingMode"] != "account-state-v1"
+    if manifest["accountingMode"] != "account-state-v2"
         || manifest["circuitSha256"] != HEXLOWER.encode(&config.proof_scope.circuit_digest)
         || manifest["vkSha256"] != HEXLOWER.encode(&config.proof_scope.verifying_key_digest)
     {

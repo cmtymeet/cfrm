@@ -11,6 +11,14 @@ The following are implementation proposals, not measured improvements. The
 current accepted relation, receipt formats and production capability flags are
 unchanged.
 
+Crow 9/52 profiled the existing hash-pinned compiled circuit without creating
+new proofs. Of 319,319 gates, debug-source attribution assigns 84,198 to SHA-256
+and 84,596 to P-256; the deepest Poseidon2 permutation source accounts for
+92,584. These are source attributions, not isolated primitive timings. Byte
+packing, bounds and remaining control/map constraints also contribute. The
+profile supports targeting both signatures/transcripts and map work; it does
+not establish savings from any proposed edit.
+
 ## First implementation to evaluate
 
 Keep existing cmsg signatures and account-state encodings. Separate the circuit

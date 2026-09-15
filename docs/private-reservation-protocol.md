@@ -21,13 +21,15 @@ this proposal does not require or authorize an automatic refund.
 `P` is a complete, common, versioned policy, authenticated independently of a
 particular contact. It must select all required amounts, capacity bounds, time
 rules and permitted numerical changes before a transition can execute.
-Unspecified parameters cause rejection. This document selects no numerical
-defaults, refill or inhibition formula, answer reward, repeated-pair reward,
-automatic timeout settlement or cancellation refund.
+Unspecified parameters cause rejection. The [reciprocity policy](reciprocity-policy.md)
+defines the v2 lifecycle, capacity/rate bounds, conservative proof windows and
+refill formula. Numerical values remain explicit configuration. No extra
+Answer/repeated-pair reward or inhibition formula is enabled.
 
-The minimal relation needs genesis, preparation, activation and authorized
-settlement. These are proposed accounting states; they are not additional
-implemented cmsg methods. Established communication and ordinary device catchup
+The relation includes genesis, preparation, activation, authorized settlement,
+Prepared cancellation, outgoing expiry and refill. The account circuit is
+implemented; its complete live release composition is being validated.
+Established communication and ordinary device catchup
 continue without a conversation-specific operator request.
 
 ## One durable owner state
@@ -147,14 +149,15 @@ independently consistent checkpoint/log assumption or additional witnessing.
    owner transition. Prepared capacity is unavailable for another reservation.
    It privately presents accepted Prepared evidence with the exact contact
    tuple. This evidence cannot authorize protected payload release.
-2. **Explicit recipient authorization.** The recipient verifies the offer,
+2. **Explicit recipient authorization.** The recipient verifies the sender's
+   accepted Active reservation, the offer,
    admission requirements and both owners' block/consent rules. Only an explicit
    recipient-authorized transition creates its incoming Prepared slot. An
    unsolicited preflight, guessed member ID or received proof cannot debit it.
-3. **Activate.** Each owner commits its own Prepared-to-Active transition and
-   privately presents accepted Active evidence. A conservative sequence is
-   sender activation followed by recipient activation after verifying the
-   sender's evidence. No cross-account operator transaction is claimed.
+3. **Activate.** The sender activates before requesting the incoming reservation;
+   the recipient then activates its own authorized slot. Both privately present
+   accepted Active evidence with the same opening time and lease. No cross-account
+   operator transaction is claimed.
 4. **Release.** Both honest endpoints verify the matching Active evidence for
    both roles and persist the contact gate before releasing the introduction.
    The receiving endpoint also checks its current local slot, selected group,
@@ -182,25 +185,26 @@ contact nonce on retry.
 | --- | --- |
 | Operator response lost | Query or retry the exact persisted request. Do not guess failure, generate another debit, or overwrite its successor opening. |
 | Competing device wins | Recover the accepted version and opening through authorized device/recovery synchronization, then construct a new transition from that state. Never rebase by dropping obligations. |
-| One or both slots remain Prepared | No introduction is released. Preserve the reserved state. This proposal authorizes no cancellation refund; any future Prepared-only release rule needs explicit policy and must prove the slot never became Active. |
-| Sender becomes Active; recipient stays silent or never activates | Keep the outgoing obligation. No payload is released without both Active proofs. No timeout, sender block, retry, new device or new group refunds it. |
+| One or both slots remain Prepared | No introduction is released. Cancel only by proving the current slot is still Prepared; retain the event tombstone and consumed admission turn. |
+| Sender becomes Active; recipient stays silent or never activates | No payload is released without both Active proofs. After the lease, retire the outgoing reservation with its cost spent; neither expiry nor reconnect refunds it. |
 | Recipient becomes Active; its acknowledgment is lost | Retry the private evidence exchange for the same event. Do not activate another slot or regenerate the introduction nonce. |
 | Recipient closes before seeing an introduction | Persist its exact closure and retain it for private delivery/retry. Once validly bound to the Active obligation, it can support settlement without claiming that an introduction was delivered. Old data remains rejected. |
 | Receipt or settlement response is lost | Retry the same private event/owner update. A renewed receipt changes its current signature evidence, not the event marker or credit count. |
 | Credentials expire while pending | Preserve historical reservation provenance. Verify authority appropriate to the eventual transition; a silent peer's expired membership must not prevent the recipient's own authorized closure. |
 | All private openings/recovery material are lost | Preserve the lifetime account registration and operator state. There is no second genesis or balance reset. Continued usability is not guaranteed. |
 
-Sender cancellation does not resolve an outgoing obligation. In particular,
+Transport cancellation does not refund an Active outgoing obligation. In particular,
 absence of peer evidence proves neither non-delivery nor permission to refund.
 An Active obligation stranded by silence is a fairness and griefing tradeoff,
-and may implement the intended drain on unanswered sending. It is not a reason
-to add a refund requirement. The minimal proposal makes no guarantee of fair
-exchange or bounded recovery time when a peer or operator stops cooperating.
+and implements the intended drain on unanswered sending. Explicit outgoing
+expiry and bounded refill provide a numerical recovery path under an available
+operator; they do not prove perfect fair exchange or bound operator downtime.
 
 ## Settlement authority and remaining implementation work
 
-Outgoing settlement requires an authenticated recipient answer or recipient
-closure bound to the reserved pair, nonce, group and role. A recipient's own
+An outgoing refund requires an authenticated recipient Answer bound to the
+reserved pair, nonce, group and role. Authenticated recipient Close or proved
+outgoing lease expiry consumes the cost without a refund. A recipient's own
 closure may resolve its incoming obligation. A self-declared incoming answer
 cannot earn a reward without the additional authenticated acknowledgment event
 selected by the response protocol. No reward formula is chosen here.

@@ -10,6 +10,7 @@ use cfrm::{
 };
 use data_encoding::HEXLOWER;
 use ed25519_dalek::SigningKey;
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -48,6 +49,15 @@ enum Input {
     },
     VerifyAcceptance {
         acceptance: AccountAcceptance,
+    },
+    // Trusted local CI adapter only. Never expose this lookup through browser
+    // IPC or use it to query a counterpart's named account.
+    VerifyCurrentOwnState {
+        owner: [u8; 32],
+        #[serde(rename = "stateVersion")]
+        state_version: u64,
+        #[serde(rename = "stateCommitment")]
+        state_commitment: [u8; 32],
     },
     Apply {
         grant: AdmissionGrant,
@@ -162,6 +172,32 @@ fn run() -> Result<Value, Box<dyn std::error::Error>> {
         )?;
         return Ok(json!({ "verified": true }));
     }
+    if let Input::VerifyCurrentOwnState {
+        owner,
+        state_version,
+        state_commitment,
+    } = command
+    {
+        // The trusted harness pins this database and the caller's own owner.
+        // Opening read-only also prevents a missing database from silently
+        // creating a new account store. This is a snapshot check, not a lock
+        // held across network delivery or a production status endpoint.
+        let connection = Connection::open_with_flags(&args[2], OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let current: Option<(i64, Vec<u8>)> = connection
+            .query_row(
+                "SELECT version,state FROM cfrm_accounts WHERE owner=?1",
+                [owner.as_slice()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if !current.is_some_and(|(version, state)| {
+            u64::try_from(version).ok() == Some(state_version)
+                && state.as_slice() == state_commitment
+        }) {
+            return Err("own account state is absent or superseded".into());
+        }
+        return Ok(json!({ "verified": true }));
+    }
     let verifier = RealProcessVerifier {
         scope: config.proof_scope,
         script: std::fs::canonicalize(&args[3])?,
@@ -200,7 +236,10 @@ fn run() -> Result<Value, Box<dyn std::error::Error>> {
             request,
             now,
         } => serde_json::to_value(ledger.status(&grant, &authorization, &request, || now)?),
-        Input::Prepare { .. } | Input::Verify { .. } | Input::VerifyAcceptance { .. } => unreachable!(),
+        Input::Prepare { .. }
+        | Input::Verify { .. }
+        | Input::VerifyAcceptance { .. }
+        | Input::VerifyCurrentOwnState { .. } => unreachable!(),
     }?;
     if args.len() == 8 {
         std::process::exit(0);

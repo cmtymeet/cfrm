@@ -34,6 +34,14 @@ policy and opening time. The opening time plus the common `abandonAfter` defines
 the lease. It is immutable after reservation. Peer-only presentations expose
 this context to the counterpart; named operator updates must not contain it.
 
+A pending introduction belongs to the devices that reserved it. Its peer proof
+binds the reservation-time device authority; a sibling device cannot substitute
+its own welcome or first payload. Other devices may synchronize accepted history
+and participate after the conversation is established. Moving an unresolved
+introduction to another device requires closure and fresh admission. Concurrent
+instances of one device must use a durable storage version check; copying or
+rolling back all trusted device storage is outside that guarantee.
+
 ## One budget and one rate counter
 
 Let `A` be available units, `R` all reserved units across both directions, and
@@ -81,6 +89,9 @@ clipped to policy expiry. All members proving in that window use the same
 horizon, avoiding a per-contact public expiry tag. The signed request cannot
 outlive it. The ledger rechecks expiry after proof verification and atomically
 accepts one successor with its exact response and event marker.
+Current accounting enrollment must remain valid through that horizon. Historical
+receipt authority is checked at its signature time against the exact authority
+committed in the reservation; it cannot replace current owner authorization.
 
 Reservation, activation and Answer require the entire proof validity window to
 fit inside the private lease. Configuration rejects `abandonAfter < rateWindow`.
@@ -97,6 +108,13 @@ signing or queuing an Answer earns no refund. The recipient can explicitly Close
 to clear the obligation. This is a defined escape from withholding, not proof of
 perfect fair exchange. Protocols that guarantee stronger recovery commonly add
 a trusted recovery party ([Asokan et al., 1997](https://research.ibm.com/publications/optimistic-protocols-for-fair-exchange)).
+
+A fresh peer challenge proves possession of an accepted Active opening, not
+that the accepted state has never been superseded. The honest endpoint therefore
+also enforces its own current obligation, exact encounter context, expiry and
+durable first-payload/closure history. An old certificate cannot authorize a new
+encounter. The own-state query is a snapshot; it is not a cross-account lock held
+through network delivery.
 
 ## Incentive bounds and limits
 

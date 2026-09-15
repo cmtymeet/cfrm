@@ -62,6 +62,12 @@ capture() {
   for name in manifest.json circuit.json circuit-stats.json; do
     test ! -f "public/$name" || cp "public/$name" "$artifact_dir/$name"
   done
+  if test -d public/peer-reservation; then
+    mkdir -p "$artifact_dir/peer-reservation"
+    for name in circuit.json vk.bin stats.json; do
+      test ! -f "public/peer-reservation/$name" || cp "public/peer-reservation/$name" "$artifact_dir/peer-reservation/$name"
+    done
+  fi
   if test -d dist; then tar --create --file "$artifact_dir/browser-package.tar" dist; fi
   (
     cd "$artifact_dir"

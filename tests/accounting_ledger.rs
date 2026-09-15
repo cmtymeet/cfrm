@@ -13,9 +13,11 @@ use std::{
     cell::Cell,
     path::Path,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+        mpsc::{self, Receiver, Sender},
         Arc,
     },
+    time::Duration,
 };
 
 #[derive(Clone, Default)]
@@ -40,6 +42,31 @@ impl AccountProofVerifier for StorageOnlyVerifier {
     }
 }
 
+struct BlockedVerifier {
+    inner: StorageOnlyVerifier,
+    entered: Sender<()>,
+    release: Receiver<()>,
+}
+
+impl AccountProofVerifier for BlockedVerifier {
+    fn scope(&self) -> AccountProofScope {
+        self.inner.scope()
+    }
+    fn verify(&self, statement: &AccountStatement, proof: &[u8]) -> Result<(), Error> {
+        self.inner.verify(statement, proof)?;
+        self.entered.send(()).map_err(|_| Error::CryptoProvider)?;
+        self.release
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|_| Error::CryptoProvider)
+    }
+}
+
+fn blocked_verifier() -> (BlockedVerifier, Receiver<()>, Sender<()>) {
+    let (entered, observed) = mpsc::channel();
+    let (release, resume) = mpsc::channel();
+    (BlockedVerifier { inner: StorageOnlyVerifier::default(), entered, release: resume }, observed, release)
+}
+
 fn fr(n: u8) -> [u8; 32] {
     let mut value = [0; 32];
     value[31] = n;
@@ -62,11 +89,11 @@ fn policy() -> AccountLedgerPolicy {
         checkpoint_period_seconds: 1000,
     }
 }
-fn open(
+fn open<V: AccountProofVerifier>(
     path: &Path,
     fixture: &Fixture,
-    verifier: StorageOnlyVerifier,
-) -> AccountLedger<StorageOnlyVerifier> {
+    verifier: V,
+) -> AccountLedger<V> {
     AccountLedger::open(
         path,
         fixture.trust.clone(),
@@ -256,6 +283,144 @@ fn expiry_and_clock_changes_during_verification_have_no_effect() {
         ledger.apply(&g, &a, &request, || 129),
         Err(Error::ClockRollback)
     );
+}
+
+#[test]
+fn blocked_proof_allows_another_owner_to_commit_and_rechecks_shared_clock_floor() {
+    for other_time in [120, 121] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.sqlite");
+        let f = Fixture::new();
+        let (verifier, entered, release) = blocked_verifier();
+        let mut slow = open(&path, &f, verifier);
+        slow.admit_checkpoint(0, fr(8)).unwrap();
+        let g = f.grant(7, &f.device);
+        let a = f.authorize(7, &f.device);
+        let first = genesis(&f);
+        let other_grant = f.grant(8, &f.device);
+        let other_authorization = f.authorize(8, &f.device);
+        let mut other = genesis(&f);
+        other.statement.owner = B64.decode(other_grant.member_id.as_bytes()).unwrap().try_into().unwrap();
+        other.request_id = [21; 32];
+        sign(&mut other, &f.device);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(move || slow.apply(&g, &a, &first, || 120));
+            entered.recv_timeout(Duration::from_secs(10)).unwrap();
+            // Open/configuration and checkpoint publication must also remain
+            // possible while the first verifier is deliberately blocked.
+            let mut fast = open(&path, &f, StorageOnlyVerifier::default());
+            fast.admit_checkpoint(0, fr(8)).unwrap();
+            let accepted = fast.apply(&other_grant, &other_authorization, &other, || other_time);
+            release.send(()).unwrap();
+            let resumed = worker.join().unwrap();
+            assert!(accepted.is_ok(), "another owner's commit must precede verifier release");
+            if other_time == 120 {
+                assert!(resumed.is_ok());
+            } else {
+                assert_eq!(resumed, Err(Error::ClockRollback));
+            }
+        });
+        let db = Connection::open(&path).unwrap();
+        assert_eq!(db.query_row("SELECT count(*) FROM cfrm_accounts", [], |row| row.get::<_, i64>(0)).unwrap(),
+            if other_time == 120 { 2 } else { 1 });
+    }
+}
+
+#[test]
+fn successor_losing_during_verification_cannot_commit_its_marker_or_response() {
+    for same_request_id in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.sqlite");
+        let f = Fixture::new();
+        let mut fast = open(&path, &f, StorageOnlyVerifier::default());
+        fast.admit_checkpoint(0, fr(8)).unwrap();
+        let g = f.grant(7, &f.device);
+        let a = f.authorize(7, &f.device);
+        let first = genesis(&f);
+        fast.apply(&g, &a, &first, || 120).unwrap();
+        let losing = successor(&first, &f, 11);
+        let mut winning = successor(&first, &f, if same_request_id { 11 } else { 12 });
+        winning.statement.next_state = fr(3);
+        winning.statement.settlement_marker = fr(16);
+        sign(&mut winning, &f.device);
+        let (verifier, entered, release) = blocked_verifier();
+        let mut slow = open(&path, &f, verifier);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| slow.apply(&g, &a, &losing, || 130));
+            entered.recv_timeout(Duration::from_secs(10)).unwrap();
+            let accepted = fast.apply(&g, &a, &winning, || 130);
+            release.send(()).unwrap();
+            let resumed = worker.join().unwrap();
+            assert!(accepted.is_ok());
+            assert_eq!(resumed, Err(Error::Replay));
+        });
+        let db = Connection::open(&path).unwrap();
+        let (state, request): (Vec<u8>, Vec<u8>) = db.query_row(
+            "SELECT state,latest_request FROM cfrm_accounts", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!(state, winning.statement.next_state);
+        assert_eq!(request, winning.request_id);
+        assert_eq!(db.query_row("SELECT marker FROM cfrm_accounts_markers", [], |row| row.get::<_, Vec<u8>>(0)).unwrap(), fr(16));
+        assert_eq!(db.query_row("SELECT count(*) FROM cfrm_accounts_requests", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+    }
+}
+
+#[test]
+fn concurrently_cached_request_bypasses_original_expiry_but_requires_live_authority() {
+    for completed in [200, 900, 1000] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.sqlite");
+        let f = Fixture::new();
+        let mut fast = open(&path, &f, StorageOnlyVerifier::default());
+        fast.admit_checkpoint(0, fr(8)).unwrap();
+        let g = f.grant(7, &f.device);
+        let a = f.authorize(7, &f.device);
+        let first = genesis(&f);
+        fast.apply(&g, &a, &first, || 120).unwrap();
+        let request = successor(&first, &f, 11);
+        let (verifier, entered, release) = blocked_verifier();
+        let mut slow = open(&path, &f, verifier);
+        let now = AtomicU64::new(130);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| slow.apply(&g, &a, &request, || now.load(Ordering::SeqCst)));
+            entered.recv_timeout(Duration::from_secs(10)).unwrap();
+            let accepted = fast.apply(&g, &a, &request, || 130);
+            now.store(completed, Ordering::SeqCst);
+            release.send(()).unwrap();
+            let resumed = worker.join().unwrap();
+            let accepted = accepted.unwrap();
+            if completed == 200 {
+                assert_eq!(resumed.unwrap(), accepted);
+            } else {
+                assert_eq!(resumed, Err(Error::Expired));
+            }
+        });
+        let db = Connection::open(&path).unwrap();
+        assert_eq!(db.query_row("SELECT count(*) FROM cfrm_accounts_requests", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(db.query_row("SELECT count(*) FROM cfrm_accounts_markers", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+    }
+}
+
+#[test]
+fn checkpoint_slot_expiry_during_verification_cannot_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ledger.sqlite");
+    let f = Fixture::new();
+    let mut configured = policy();
+    configured.checkpoint_period_seconds = 150;
+    let mut ledger = AccountLedger::open(&path, f.trust.clone(), configured,
+        StorageOnlyVerifier::default(), SigningKey::from_bytes(&[9; 32])).unwrap();
+    ledger.admit_checkpoint(0, fr(8)).unwrap();
+    let times = [120, 120, 150];
+    let index = Cell::new(0);
+    let result = ledger.apply(&f.grant(7, &f.device), &f.authorize(7, &f.device), &genesis(&f), || {
+        let i = index.get();
+        index.set(i + 1);
+        times[i]
+    });
+    assert_eq!(result, Err(Error::Expired));
+    let db = Connection::open(&path).unwrap();
+    assert_eq!(db.query_row("SELECT count(*) FROM cfrm_accounts", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(db.query_row("SELECT clock_floor FROM cfrm_accounts_config", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
 }
 
 #[test]

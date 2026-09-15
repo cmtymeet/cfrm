@@ -98,6 +98,71 @@ fn cached(
         .transpose()
 }
 
+// Check mutable database predicates both before expensive verification and in
+// the final write transaction. Policy and request bytes remain immutably
+// borrowed across verification; no preflight database result authorizes commit.
+fn check_pending(
+    transaction: &Transaction<'_>,
+    request: &AccountRequest,
+    root_key: &[u8; 32],
+    grant: &AdmissionGrant,
+    authorization: &DeviceAuthorization,
+    policy: &AccountLedgerPolicy,
+    now: u64,
+) -> Result<(), Error> {
+    let statement = &request.statement;
+    if request.expires_at - request.issued_at > policy.max_authorization_seconds
+        || now < request.issued_at
+        || now >= request.expires_at
+        || request.expires_at > grant.expires_at
+        || request.expires_at > authorization.expires_at
+        || request.expires_at > policy.account.policy_valid_until
+    {
+        return Err(Error::Expired);
+    }
+    let slot = statement.now / policy.checkpoint_period_seconds;
+    if now / policy.checkpoint_period_seconds != slot {
+        return Err(Error::Expired);
+    }
+    let checkpoint: Option<Vec<u8>> = transaction
+        .query_row(
+            "SELECT root FROM cfrm_accounts_checkpoints WHERE slot=?1",
+            [sql_integer(slot)?],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if checkpoint.as_deref() != Some(statement.enrollment_root.as_slice()) {
+        return Err(Error::Admission);
+    }
+    let prior: Option<(Vec<u8>, i64, Vec<u8>)> = transaction
+        .query_row(
+            "SELECT root_key,version,state FROM cfrm_accounts WHERE owner=?1",
+            [statement.owner.as_slice()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    match prior {
+        None if statement.genesis => {}
+        Some((key, version, state))
+            if !statement.genesis
+                && key.as_slice() == root_key
+                && stored_integer(version)? == statement.previous_version
+                && state.as_slice() == statement.previous_state => {}
+        _ => return Err(Error::Replay),
+    }
+    if statement.settlement_marker != [0; 32] {
+        let exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM cfrm_accounts_markers WHERE owner=?1 AND marker=?2)",
+            params![statement.owner.as_slice(), statement.settlement_marker.as_slice()],
+            |row| row.get(0),
+        )?;
+        if exists {
+            return Err(Error::Replay);
+        }
+    }
+    Ok(())
+}
+
 impl<V: AccountProofVerifier> AccountLedger<V> {
     pub fn open(
         path: impl AsRef<Path>,
@@ -276,68 +341,39 @@ impl<V: AccountProofVerifier> AccountLedger<V> {
             transaction.commit()?;
             return Ok(result);
         }
-        if request.expires_at - request.issued_at > self.policy.max_authorization_seconds
-            || now < request.issued_at
-            || now >= request.expires_at
-            || request.expires_at > grant.expires_at
-            || request.expires_at > authorization.expires_at
-            || request.expires_at > self.policy.account.policy_valid_until
+        check_pending(&transaction, request, &root_key, grant, authorization, &self.policy, now)?;
+        // Release every SQLite lock before invoking an external or slow
+        // verifier. Other owners and competing devices can commit meanwhile.
+        transaction.rollback()?;
+        self.verifier.verify(statement, &request.proof)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let completed = clock();
+        check_time(completed, clock_floor(&transaction)?.max(now))?;
+        if completed >= grant.expires_at
+            || completed >= authorization.expires_at
         {
             return Err(Error::Expired);
         }
-        let slot = statement.now / self.policy.checkpoint_period_seconds;
-        if now / self.policy.checkpoint_period_seconds != slot {
-            return Err(Error::Expired);
-        }
-        let checkpoint: Option<Vec<u8>> = transaction
-            .query_row(
-                "SELECT root FROM cfrm_accounts_checkpoints WHERE slot=?1",
-                [sql_integer(slot)?],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if checkpoint.as_deref() != Some(statement.enrollment_root.as_slice()) {
-            return Err(Error::Admission);
-        }
-        let prior: Option<(Vec<u8>, i64, Vec<u8>)> = transaction
-            .query_row(
-                "SELECT root_key,version,state FROM cfrm_accounts WHERE owner=?1",
-                [statement.owner.as_slice()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()?;
-        match prior {
-            None if statement.genesis => {}
-            Some((key, version, state))
-                if !statement.genesis
-                    && key.as_slice() == root_key
-                    && stored_integer(version)? == statement.previous_version
-                    && state.as_slice() == statement.previous_state => {}
-            _ => return Err(Error::Replay),
-        }
-        if statement.settlement_marker != [0; 32] {
-            let exists: bool = transaction.query_row(
-                "SELECT EXISTS(SELECT 1 FROM cfrm_accounts_markers WHERE owner=?1 AND marker=?2)",
-                params![
-                    statement.owner.as_slice(),
-                    statement.settlement_marker.as_slice()
-                ],
-                |row| row.get(0),
-            )?;
-            if exists {
+        verify_admission(grant, &self.trust, completed)?;
+        verify_device_authorization(authorization, grant, completed)?;
+        // A concurrent exact request may already have committed. Recover its
+        // original response before applying expiry/CAS checks to a fresh write.
+        if let Some(result) = cached(
+            &transaction,
+            &statement.owner,
+            &request.request_id,
+            &operator_key,
+        )? {
+            if result.request_digest != request_digest {
                 return Err(Error::Replay);
             }
+            advance_clock(&transaction, completed)?;
+            transaction.commit()?;
+            return Ok(result);
         }
-        self.verifier.verify(statement, &request.proof)?;
-        let completed = clock();
-        check_time(completed, now)?;
-        if completed >= request.expires_at
-            || completed >= grant.expires_at
-            || completed >= authorization.expires_at
-            || completed / self.policy.checkpoint_period_seconds != slot
-        {
-            return Err(Error::Expired);
-        }
+        check_pending(&transaction, request, &root_key, grant, authorization, &self.policy, completed)?;
         let mut acceptance = AccountAcceptance {
             statement: statement.clone(),
             request_id: request.request_id,

@@ -34,11 +34,13 @@ device and validity interval. Statements use canonical BN254 field encodings
 and bounded integers. Unknown serialized fields are rejected. Neither named
 endpoint's request contains a shared conversation identifier.
 
-An immediate SQLite transaction checks lifetime genesis uniqueness or the exact
-previous version/commitment, verifies the proof, consumes any settlement marker,
-updates the state and stores the signed acceptance. Time and authorization are
-checked again after lock acquisition and verification. WAL with `synchronous=FULL`
-protects the committed update under SQLite's filesystem durability assumptions.
+A short SQLite transaction checks whether the request is already accepted or
+eligible for verification. Proof verification runs with all database locks
+released. A final immediate transaction rechecks current authorization, time,
+checkpoint, cached response, lifetime genesis or exact previous state, and
+settlement markers before committing the successor and signed acceptance.
+Another owner can commit while a slow proof is being checked. WAL with
+`synchronous=FULL` protects commits under SQLite's filesystem durability assumptions.
 
 Exact signed retries recover the cached acceptance without another proof or
 debit, including after the original request expires when the caller supplies

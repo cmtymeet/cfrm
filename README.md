@@ -6,7 +6,7 @@ The [Rust core](docs/rust-core.md) provides a member-authenticated multi-device 
 
 The earlier certified onion rendezvous library and numerical experiments remain available separately. cfrm composes with externally operated eligibility verification and [cmsg](https://github.com/corbet-labs/cmsg) for private information transport. Full private reciprocal accounting and numerical disapproval remain implementation work. It is not a complete deployed community service.
 
-The experimental [private account ledger](docs/account-ledger.md) adds durable opaque-state updates, lifetime genesis uniqueness and authenticated recovery across devices. Its storage/authorization tests passed on Crow; real account-state proof integration remains separate. The host must supply the complete pinned verifier.
+The experimental [private account ledger](docs/account-ledger.md) adds durable opaque-state updates, lifetime genesis uniqueness and authenticated recovery across devices. The [account-state foundation](experiments/private-accounting/account-state/README.md) has passed a real browser Answer flow through cmsg signatures, proof verification and Rust SQLite acceptance/recovery. The host must supply the complete pinned verifier. Full browser proofs currently take about 27 seconds and sampled browser memory exceeds 1 GiB; protected release, complete private accounting and mobile readiness remain unfinished.
 
 The core/browser CI runs on GHA, with Crow as the fallback. At `3bc89d0`, 63 actual Chromium checks passed for the roster and blind permits, alongside 21 Rust and 55 historical JavaScript tests and portable Wasm checking. These results do not establish the missing private reciprocal-budget proof.
 

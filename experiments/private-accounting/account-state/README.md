@@ -136,7 +136,7 @@ verifier startup. The corrected ledger passed 13 native storage/authorization
 tests on Crow 9/48 at `524956395852696c1d3f6ac4bd57ef5f8652c261`.
 
 Crow 9/49 at that corrected source reused the hash-verified run 46 public proofs
-and retained native enrollment. All 19 real Rust integration checks passed,
+and retained native enrollment. All 18 real Rust integration checks passed,
 including independent-process contention, durable acceptance, process exit
 after commit, expired exact retry and malformed-proof rejection. This replay
 did not rerun the browser or receive private witnesses. Close validation is

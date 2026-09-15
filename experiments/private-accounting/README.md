@@ -90,6 +90,12 @@ recipient's capacity; this experiment does not implement that historical path.
   explicitly enables zero knowledge. No non-ZK mode, development verifier or
   successful mock is accepted.
 
+The JavaScript compiler's dependency resolver reads exact Git references from
+[`tag`, not `rev`](https://github.com/noir-lang/noir/blob/v1.0.0-beta.26/compiler/wasm/src/noir/dependencies/github-dependency-resolver.ts).
+The `sha2lib` alias also avoids its virtual `sha256/sha256.nr` path triggering
+the compiler's [same-name parent-directory module rule](https://github.com/noir-lang/noir/blob/v1.0.0-beta.26/compiler/noirc_frontend/src/hir/def_collector/dc_mod.rs).
+The pinned hash library is unchanged.
+
 Initial dependency resolution uses `RESOLVE_DEPENDENCIES=1`; initial setup
 bootstrap separately uses `RESOLVE_SETUP=1`. Retain the generated npm lock,
 native Cargo lock and `setup-lock.json`. Subsequent CI uses those exact locks.

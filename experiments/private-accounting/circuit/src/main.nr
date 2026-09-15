@@ -1,6 +1,6 @@
 // EXPERIMENT ONLY: one reserved obligation -> one authenticated close/answer.
 // No genesis, refill, arbitrary pending map, policy selection or production admission.
-use sha256::digest;
+use sha2lib::digest;
 
 fn leaf(community: [u8; 32], member: [u8; 32], key: [u8; 64], secret_hash: [u8; 32], start: u64, end: u64) -> [u8; 32] {
     let mut bytes = [0; 177];

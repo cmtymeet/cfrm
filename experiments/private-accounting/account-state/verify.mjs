@@ -101,6 +101,11 @@ export async function verifyAccountResults(result, trusted) {
     await rejects(invalidTime, 'independent rejects unapproved time');
     const invalidPolicy = structuredClone(positive); invalidPolicy.statement.policy.initialCredit += 1;
     await rejects(invalidPolicy, 'independent rejects unpinned policy');
+    for (const name of ['circuitDigest','verifyingKeyDigest']) {
+      const alteredScope = structuredClone(positive); alteredScope.proofScope = structuredClone(verifier.scope);
+      alteredScope.proofScope[name][0] ^= 1;
+      await rejects(alteredScope, 'independent rejects a different ' + name + ' after policy implementation changes');
+    }
     const corrupted = structuredClone(positive); corrupted.proof = (corrupted.proof.startsWith('00') ? '01' : '00') + corrupted.proof.slice(2);
     await rejects(corrupted, 'independent rejects changed proof');
     await verifier.verify(positive); checks.push('independent positive after malformed inputs');

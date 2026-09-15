@@ -137,7 +137,9 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   recipient = await prove(activeRecipient, 1, 'proved recipient activation preserves other role');
   const secondaryRoot = recipient.outgoing.root;
   stage('actual-cmsg-' + configuration.accountScenario);
-  const prepared = await post(configuration.accountScenario === 'answer' ? { command: 'answer' } : { command: 'close', now: 300 });
+  // Produce the actual decision while both owners can authorize their named
+  // updates. Recipient settlement still runs after the sender expires.
+  const prepared = await post(configuration.accountScenario === 'answer' ? { command: 'answer' } : { command: 'close', now: 100 });
   assert(prepared.ok, 'actual durable cmsg recipient decision exists');
   const message = unhex(prepared.value.signingBytes);
   assert(message.length === 357, 'real cmsg receipt has exact versioned357 encoding');
@@ -149,7 +151,7 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   resolution.signature = canonicalSignature(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, holders[1].key.privateKey, message));
   const completeReceipt = { ...prepared.value.receipt, signature: Array.from(resolution.signature) };
   assert((await post({ command: 'verifyReceipt', receipt: completeReceipt, now: Number(resolution.issuedAt) })).ok, 'Rust verifies browser-signed actual cmsg receipt');
-  let acknowledgment;
+  let acknowledgment, completeAck;
   if (configuration.accountScenario === 'answer') {
     const preparedAck = await post({ command: 'ack', answer: completeReceipt });
     assert(preparedAck.ok, 'actual cmsg original sender acknowledges delivered answer');
@@ -159,19 +161,67 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
       checkpoint.entries[1].member, slot, await receiptDigest(message, resolution.signature),
       checkpoint.entries[0].delegationDigest, issuedAt)), 'browser encoding matches exact nested-answer acknowledgment');
     acknowledgment = { issuedAt, signature: canonicalSignature(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, holders[0].key.privateKey, ackMessage)) };
-    const completeAck = { ...preparedAck.value.acknowledgment, signature: Array.from(acknowledgment.signature) };
+    completeAck = { ...preparedAck.value.acknowledgment, signature: Array.from(acknowledgment.signature) };
     assert((await post({ command: 'verifyAcknowledgment', acknowledgment: completeAck, now: 100 })).ok, 'Rust verifies browser-signed sender acknowledgment');
-    const settledSender = await sender.settle(outgoing.event, resolution, undefined, 100);
-    await mutate(settledSender, 'sender cannot self-sign a resolution refund', async input => {
-      input.resolution.signature = canonicalSignature(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, holders[0].key.privateKey, message));
+  }
+  const settledSender = await sender.settle(outgoing.event, resolution, undefined, 100);
+  const senderAmount = BigInt(policy.outgoingReservation);
+  const senderRefund = configuration.accountScenario === 'answer' ? senderAmount : 0n;
+  assert(settledSender.next.opening.available === sender.opening.available + senderRefund
+    && settledSender.next.opening.reserved === sender.opening.reserved - senderAmount,
+  'actual ' + configuration.accountScenario + ' has the exact sender refund/burn');
+  await mutate(settledSender, 'sender cannot self-sign a recipient resolution', async input => {
+    input.resolution.signature = canonicalSignature(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, holders[0].key.privateKey, message));
+  });
+  await mutate(settledSender, 'settlement rejects high-S receipt signatures', input => { input.resolution.signature = highS(input.resolution.signature); });
+  await mutate(settledSender, 'coherent successor cannot swap Answer refund and Close burn', async input => {
+    const opening = structuredClone(settledSender.next.opening);
+    opening.available += configuration.accountScenario === 'close' ? senderAmount : -senderAmount;
+    input.next_state = fieldBytes(await settledSender.next.commit(opening, settledSender.next.version));
+  });
+  await mutate(settledSender, 'settlement cannot retain the resolved reservation amount', async input => {
+    const opening = structuredClone(settledSender.next.opening); opening.reserved += senderAmount;
+    input.next_state = fieldBytes(await settledSender.next.commit(opening, settledSender.next.version));
+  });
+  if (configuration.accountScenario === 'close' && settledSender.next.opening.available > 0n) {
+    await mutate(settledSender, 'Close burn cannot exceed the exact policy reservation', async input => {
+      const opening = structuredClone(settledSender.next.opening); opening.available -= 1n;
+      input.next_state = fieldBytes(await settledSender.next.commit(opening, settledSender.next.version));
     });
-    await mutate(settledSender, 'settlement rejects high-S receipt signatures', input => { input.resolution.signature = highS(input.resolution.signature); });
-    sender = await prove(settledSender, 0, 'proved outgoing actual-answer settlement');
-    assert((await post({ command: 'advance', now: 300 })).ok, 'native fixture advances its trusted test clock');
+  }
+  sender = await prove(settledSender, 0, 'proved outgoing actual-' + configuration.accountScenario + ' settlement');
+  let secondDecisionRejected = false;
+  try { await sender.settle(outgoing.event, { ...resolution, kind: resolution.kind === 1 ? 2 : 1 }, undefined, 100); }
+  catch { secondDecisionRejected = true; }
+  assert(secondDecisionRejected, 'settled Answer/Close cannot be replaced by a later decision');
+  await mutate(settledSender, 'proved settled state rejects a freshly recipient-signed later decision', async input => {
+    const later = { ...resolution, kind: resolution.kind === 1 ? 2 : 1 };
+    const senderSlot = sender.slots.get(outgoing.event.toString());
+    later.signature = canonicalSignature(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, holders[1].key.privateKey,
+      receiptBytes(community, checkpoint.entries[1].member, checkpoint.entries[0].member,
+        senderSlot, checkpoint.entries[1].delegationDigest, later)));
+    const current = sender.input(random(), 100);
+    input.old = current.old; input.new_blind = current.new_blind;
+    input.previous_state = current.previous_state; input.previous_version = current.previous_version;
+    input.next_version = current.next_version; input.slot.phase = 3;
+    input.own_map = sender.outgoing.witness(sender.outgoing.find(outgoing.event)[0]);
+    input.resolution.kind = later.kind; input.resolution.signature = later.signature;
+    const opening = structuredClone(sender.opening); opening.blind = current.new_blind;
+    input.next_state = fieldBytes(await sender.commit(opening, current.next_version));
+  });
+  assert((await post({ command: 'advance', now: 300 })).ok, 'native fixture advances its trusted test clock');
+  if (completeAck) {
     assert((await post({ command: 'verifyHistoricalAcknowledgment', acknowledgment: completeAck, now: 300 })).ok, 'native historical acknowledgment retains exact expired sender authority');
     assert(!(await post({ command: 'verifyAcknowledgment', acknowledgment: completeAck, now: 300 })).ok, 'current verifier does not silently authorize expired sender');
   }
   const settledRecipient = await recipient.settle(incoming.event, resolution, acknowledgment, 300);
+  assert(settledRecipient.next.opening.available === recipient.opening.available + BigInt(policy.incomingReservation)
+    && settledRecipient.next.opening.reserved === recipient.opening.reserved - BigInt(policy.incomingReservation),
+  'recipient actual Answer/Close restores exactly its own reservation');
+  await mutate(settledRecipient, 'recipient settlement cannot silently burn its refundable capacity', async input => {
+    const opening = structuredClone(settledRecipient.next.opening); opening.available -= BigInt(policy.incomingReservation);
+    input.next_state = fieldBytes(await settledRecipient.next.commit(opening, settledRecipient.next.version));
+  });
   await mutate(settledRecipient, 'settlement cannot change a saved historical peer', input => { input.slot.peer_authority += 1n; });
   await mutate(settledRecipient, 'coherent successor cannot mint extra available credit', async input => {
     const opening = structuredClone(settledRecipient.next.opening); opening.available += 1n;

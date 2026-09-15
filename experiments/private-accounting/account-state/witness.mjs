@@ -144,7 +144,10 @@ export class AccountWitness {
       if (!resolution) throw new Error('Authenticated receipt required');
       input.resolution = resolutionInput(resolution);
       if (acknowledgment) input.acknowledgment = { issued_at: acknowledgment.issuedAt, signature: acknowledgment.signature };
-      next.opening.available += slot.amount; next.opening.reserved -= slot.amount;
+      // Only a verified recipient Close can leave the initiator's cost spent.
+      // The circuit derives this same private burn and proves conservation.
+      if (slot.role !== 0 || Number(resolution.kind) !== 2) next.opening.available += slot.amount;
+      next.opening.reserved -= slot.amount;
       input.settlement_marker = fieldBytes(event);
     }
     return this.finish(next, input);

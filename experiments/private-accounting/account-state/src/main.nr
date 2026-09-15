@@ -273,6 +273,9 @@ fn main(
         let mut pair_count = old.pair_count;
         let mut available = old.available;
         let mut reserved = old.reserved;
+        // Private and derived only from an authenticated settlement below.
+        // It is never a prover-selected amount or a public outcome signal.
+        let mut burned: u32 = 0;
         if action == 1 {
             assert((slot.phase == 1) & (slot.admitted_at == now));
             verify_enrollment(community, slot.peer, peer_enrollment, field(enrollment_root), now);
@@ -315,13 +318,17 @@ fn main(
                     verify_acknowledgment(community, owner, slot, owner_enrollment,
                         peer_enrollment, resolution, acknowledgment, now);
                 }
-                available = old.available + amount;
+                // Recipient Close restores the recipient's reservation, while
+                // the initiator's already-debited cost remains spent. Answer
+                // restores either role's reservation; no extra reward exists.
+                burned = if (slot.role == 0) & (resolution.kind == 2) { amount } else { 0 };
+                available = old.available + (amount - burned);
                 reserved = old.reserved - amount as u128;
                 assert(event == field(settlement_marker));
             }
         }
         assert(available <= maximum_available);
-        assert(available as u128 + reserved == old.available as u128 + old.reserved);
+        assert(available as u128 + reserved + burned as u128 == old.available as u128 + old.reserved);
         let successor = Opening { available, reserved,
             outgoing_root: if slot.role == 0 { changed_root } else { old.outgoing_root },
             outgoing_count: if slot.role == 0 { changed_count } else { old.outgoing_count },

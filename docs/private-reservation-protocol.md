@@ -1,14 +1,15 @@
-# Private reservation protocol: bounded proposal
+# Private reservation protocol
 
 **2026-09-15 — partially implemented experimental protocol; not audited or enabled for production.**
 
 This extends the requirements in [Private reciprocal accounting](private-accounting.md)
 and the [account-state foundation](../experiments/private-accounting/account-state/README.md).
 The foundation implements proved empty genesis, both reservation maps, activation,
-settlement and a [durable Rust ledger](account-ledger.md). Its Answer and Close flows have
-passed with real cmsg signatures and browser proofs. Peer presentations,
-protected release, complete recovery and numerical policy are still separate
-work. Production `resolve_private` remains `UnsupportedCapability`.
+settlement, cancellation, expiry, refill and a [durable Rust ledger](account-ledger.md).
+Peer presentations bind accepted reservations to cmsg's protected live-release
+gate. Exact tested revisions and remaining validation limits are recorded in the
+account-state evidence. The older `resolve_private` entry point remains
+`UnsupportedCapability`.
 
 The proposal keeps one named account per permanent community member while hiding
 its contacts. Both outgoing and incoming obligations affect that same account.

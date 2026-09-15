@@ -1,12 +1,19 @@
 # Private reciprocal accounting: backend decision review
 
-**2026-09-15 — required proof contract and bounded browser evidence; no full protocol or audit.**
+**2026-09-15 — historical backend review and measurements; not an audit.**
 Inspected cfrm `2c4fa47` and the current cmsg identity, receipt and directional
 Inbox work for the initial review. The later isolated spike was executed on Crow;
 no local builds or proving benchmarks were run on the workstation.
 Eligibility remains an external verified input; provider selection is outside scope.
 
-## What exists and what is missing
+The later experimental [v2 account ledger](account-ledger.md),
+[selected policy](reciprocity-policy.md) and [private peer presentations](private-reservation-protocol.md)
+now implement genesis, both reservation roles, protected release, Answer/Close,
+Prepared cancellation, outgoing expiry and bounded refill. The current evidence
+is recorded in those documents. The earlier spike and proposed next steps below
+retain their original scope; they are not the present implementation status.
+
+## Implemented paths and production boundary
 
 [AllocationLedger](../src/allocation.rs) conserves an aggregate named-member
 allowance across devices. [Permits](../src/permits.rs) and the
@@ -17,16 +24,19 @@ a hidden receipt, prevent credit pooling, or enforce reciprocal accounting.
 
 cmsg authenticates member-controlled roots, independently authorized devices,
 private answer/close receipts, conversation nonces and directional block history.
-These supply witnesses for a future proof. A mutable client journal, even when
-encrypted and signed, is not an operator-verifiable balance proof.
+These now supply witnesses for the experimental account-state and peer proofs.
+A mutable client journal, even when encrypted and signed, is not by itself an
+operator-verifiable balance proof.
 
 The required budget is **one per permanent community member**, affected by both
 unanswered outgoing introductions and received introductions left unanswered.
 An answer or recipient-owned closure resolves the appropriate obligation under
-the eventual public policy. Sender cancellation cannot refund an outgoing
-obligation or reset the recipient's first-message limit. Established traffic
-and reconnection require no conversation-specific operator call. Amounts,
-refill/decay formulas, deadlines and repeated-pair reward rules remain unselected.
+the [selected v2 policy](reciprocity-policy.md). Sender cancellation cannot refund
+an Active outgoing obligation or reset the recipient's first-message limit;
+current-chain cancellation of a never-activated Prepared reservation is separate.
+Established traffic and reconnection require no conversation-specific operator
+call. Numerical values remain mandatory configuration. Bounded refill, explicit
+outgoing expiry and no extra Answer reward are selected policy rules.
 
 ## The statement a verifier must actually check
 
@@ -136,9 +146,9 @@ also requires common configurations, Tor, careful scheduling and trusted browser
 code; low traffic and correlated named updates remain identifying metadata.
 [Privacy Pass architecture](https://www.rfc-editor.org/rfc/rfc9576.html)
 
-The [durable reservation/recovery proposal](private-reservation-protocol.md)
-spells out candidate owner envelopes and peer-only evidence. It is design work,
-not implemented genesis or an approved refund policy.
+The [durable reservation/recovery protocol](private-reservation-protocol.md)
+describes owner envelopes and peer-only evidence, their experimental implementation
+and the remaining production and recovery limits.
 
 ## Can the directional blind-receipt experiment be repaired directly?
 
@@ -188,7 +198,7 @@ our constraints. Pin the exact compiler/backend pair, zero-knowledge mode,
 setup parameters and verifier; review transitive licensing before adoption.
 [Browser API](https://barretenberg.aztec.network/docs/how_to_guides/on-the-browser/)
 
-## Executable spike and next decision
+## Historical executable spike and subsequent work
 
 The [isolated executable spike](../experiments/private-accounting/README.md)
 uses Noir's built-in P-256 verifier and browser WebCrypto signing, with a real
@@ -208,7 +218,7 @@ performance remains unmeasured. Neither the 2 GiB ceiling nor the 65 MB end JS
 heap sample describes actual peak memory. This result warrants optimization
 before mobile suitability can be accepted.
 
-This proves only settlement of one synthetic, already-reserved obligation.
+That earlier spike proved only settlement of one synthetic, already-reserved obligation.
 It tests root-owned delegated authority and hidden owner/receipt equality,
 including genuinely signed wrong-signer, wrong-owner and backdated receipts.
 The replay fixture uses one synchronous in-memory state comparison; it does
@@ -218,7 +228,11 @@ The batched synthetic report provides no traffic-correlation evidence.
 The explicit delegated-key extension does not verify unchanged cmsg Ed25519
 receipts, and production `resolve_private` remains unsupported.
 
-The next bounded checks are:
+The following were the next checks after that spike. The later account-state
+implementation now covers durable genesis, reservations, concurrency, delegated
+authority and peer/release composition; follow the [current evidence](account-ledger.md)
+for their exact source pins. Target-device resource suitability and production
+activation remain separate:
 
 1. Extend the measured commitment comparison below with target-browser resource
    measurements. Continue separating sampled process memory from linear WASM
@@ -228,8 +242,8 @@ The next bounded checks are:
    durable genesis and an authorized reservation transition. Test recovery and
    independent competing successors. Keep the public policy explicit and
    reject unspecified parameters; do not choose product balances or deadlines.
-   This still leaves dual reservation/private peer acknowledgment, concurrent
-   pending maps and historical eligibility/block provenance to implement.
+   At that stage, dual reservation/private peer acknowledgment, concurrent
+   pending maps and historical eligibility/block provenance were still missing.
 
 3. Bind the versioned delegated receipt authority in cmsg itself, preserving
    exact member/pair/nonce/group/role semantics. Inspect both named operator
@@ -239,7 +253,7 @@ The next bounded checks are:
 
 If browser resources are unsuitable, measure the unchanged-Ed25519/zkVM route
 separately; never remove owner binding or upload a private witness to make a
-benchmark pass. None of these routes yet constitutes the full backend.
+benchmark pass. Those initial comparisons alone did not constitute the full backend.
 
 ### Measured commitment comparison
 

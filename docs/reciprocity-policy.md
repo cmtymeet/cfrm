@@ -118,6 +118,21 @@ through network delivery.
 
 ## Incentive bounds and limits
 
+The capacity invariant follows by induction over accepted transitions: Reserve
+moves units from `A` to `R`; a refund reverses that transfer; a burn decreases
+`R`; only bounded refill adds units. Increasing the capacity ceiling adds no
+units. Equivalently, available plus reserved plus permanently spent units equals
+initial credit plus accepted refill grants. The ledger's single-successor check
+prevents two devices from spending the same predecessor.
+
+For a root with window limit `K`, at most `K` new reservations can be accepted
+in that window, including canceled attempts and both directions. Refunds cannot
+increase this bound. Across a coalition of `N` admitted roots, the corresponding
+bound is at most `N × K`; eligibility therefore remains essential. Unsuccessful
+outgoing attempts permanently spend their configured cost and can continue only
+as initial credit and bounded refill permit. These are resource bounds against
+strategic clients, not assumptions about their motives.
+
 - Disconnecting yields no accounting benefit. A successful “send then disappear”
   consumes capacity and an admission turn.
 - Ignoring admitted messages fills the same budget used to initiate contacts.
@@ -142,3 +157,24 @@ shared event tags from named updates; timing correlation and operator
 equivocation require separate defenses. Model tests establish properties of
 the stated model; actual circuit, ledger and browser tests establish their own
 implementation boundaries.
+
+## Validation
+
+The independent Rust model passed 13 tests, including 4,680 bounded transitions,
+on Crow9/54. This is bounded exploration plus the invariant argument above,
+not exhaustive verification of every implementation state.
+
+Crow9/58 tested cfrm `eddc92835b2e2b08bc431852c8ff3332203198eb` with cmsg
+`80bbcf30e777b56a9ce6f8ea4a261f440c349eb0`: Answer/Close passed 224/229
+browser checks, 10/12 real account proofs and two real peer proofs each.
+Independent Node verification passed 23/25 checks; the real Rust ledger passed
+19/21 checks, including competing successors, retry and recovery. The browser
+and Node verifier use the same cryptographic backend. Private openings stayed
+inside the page. Synthetic policy clocks do not measure live-lease feasibility.
+
+At that cmsg revision, Crow10/76 passed 161 native tests plus Wasm checking;
+Crow10/77 passed 21 actual Chromium contract groups including shipped IndexedDB
+version checks across concurrent instances. Scripted transport cases and the
+earlier private-Tor runtime evidence are labeled separately. See the
+[account-state evidence](../experiments/private-accounting/account-state/README.md)
+and [proof costs](account-proof-cost.md) for artifacts and remaining limits.

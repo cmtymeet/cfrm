@@ -1,15 +1,37 @@
 # Browser account proof cost
 
-The [account-state foundation](../experiments/private-accounting/account-state/README.md)
-passes real Answer and Close flows, including Rust ledger concurrency and retry.
-Its current browser cost is a release blocker: roughly 27 seconds per proof and
-more than 1 GiB of sampled Chromium memory on the measured desktop. Multiple
-owner transitions are required before releasing a first introduction. Mobile
-viability is unverified.
+The [account-state evidence](../experiments/private-accounting/account-state/README.md)
+records real browser proofs and Rust ledger concurrency/retry. Account proofs
+take roughly 27 seconds and sampled Chromium memory exceeds 1 GiB on the
+measured desktop. Multiple owner transitions precede a first introduction;
+per-proof latency is not the full interaction time. Acceptability needs a
+complete interaction and target-browser measurement. Mobile viability remains
+unverified.
 
-The following are implementation proposals, not measured improvements. The
-current accepted relation, receipt formats and production capability flags are
-unchanged.
+The v2 Answer scenario on Crow9/58 at `eddc92835b2e2b08bc431852c8ff3332203198eb`
+measured 27.23–28.07 seconds for each of ten account proofs. Its two peer proofs
+took 1.92–1.98 seconds each. Both proof types are 14,656 bytes. The account
+relation has 331,970 gates, padded to 524,288; the peer relation has 19,971,
+padded to 32,768. Both reuse the pinned 655,360-point setup.
+
+That Answer fixture loaded 47,020,888 bytes and sampled Chromium-family PSS up
+to 1,259,763,712 bytes (about 1.17 GiB). It obtained 2328/2334 complete samples,
+with a maximum 8.67-second gap during the broader integration. Sampling excludes
+native fixtures and Node verifiers and can miss peaks; exact peak Wasm memory
+is unknown. The configured 2 GiB Wasm maximum is a limit, not measured usage.
+The fixture includes genesis, an extra obligation, negative cases and fresh
+verifier-process startup. Its full duration is not an isolated first-contact
+latency benchmark.
+
+The same run's Close scenario generated twelve account proofs in 26.99–29.59
+seconds each and two peer proofs in 1.93–1.97 seconds. Its sampled Chromium PSS
+reached 1,256,017,920 bytes, with 2679/2682 complete samples and an 8.77-second
+maximum gap. Both scenarios passed; neither uses real elapsed time as its
+account-policy clock, so these results do not establish a usable end-to-end
+lease duration.
+
+The following optimization ideas are not measured improvements. They have not
+changed the implemented v2 relation or receipt formats.
 
 Crow 9/52 profiled the existing hash-pinned compiled circuit without creating
 new proofs. Of 319,319 gates, debug-source attribution assigns 84,198 to SHA-256
@@ -66,7 +88,7 @@ latency or memory guarantee.
   WebCrypto and circuit interoperability would need new evidence. No new hash
   implementation or transcript is selected here.
 
-Neither outsourcing private witnesses nor exposing recipient identifiers is an
-approved way to reduce cost. Private peer presentations, protected release,
-durable client recovery and the unselected refill/reward/disapproval policy
-remain necessary beyond this performance work.
+Performance work must keep private witnesses at the endpoint and preserve
+contact privacy, protected release, durable recovery and the selected v2
+refill/rate policy. Extra rewards and numerical disapproval are separate policy
+questions.

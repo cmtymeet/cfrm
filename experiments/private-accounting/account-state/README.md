@@ -1,9 +1,11 @@
 # Account-state foundation
 
-**Version 2 source candidate; validation pending.** Archived version 1 evidence
-below does not validate this policy. This does not enable production
-`AllocationLedger::resolve_private`, choose product credit rules, or establish
-complete private release, recovery or mobile feasibility.
+**Version 2 Answer and Close integrations passed.** Real browser
+account and peer proofs now compose with signed Rust ledger acceptance and the
+native cmsg release gate. This does not enable production
+`AllocationLedger::resolve_private`, select numerical product policy, or establish
+complete recovery or mobile feasibility. Archived version 1 evidence below
+describes a different policy.
 
 ## Relation
 
@@ -126,11 +128,11 @@ block/consent enforcement remain necessary for protected release.
 Select `ACCOUNTING_MODE=account-state-v2` and
 `HASH_SCHEME=poseidon2-bn254-fixed-128-v1`. Separate `ACCOUNT_SCENARIO=answer`
 and `close` runs use fresh actual cmsg fixtures and the same compiled circuit/VK.
-The current candidate submits every proof to a real persistent Rust ledger
+The browser submits every proof to a real persistent Rust ledger
 before advancing the page-local opening. Two separate Active peer proofs then
 feed the native cmsg gate through its trusted verifier; see the
 [peer bridge contract](../peer-reservation/README.md#live-fixture-bridge).
-This integration and v2 policy await their full validation run.
+Both integrations passed as recorded below.
 Setup hashes live in `account-state/setup-lock.json`; only explicit initial
 `RESOLVE_SETUP=1` may create it. No browser witness is sent for remote proving.
 
@@ -167,10 +169,74 @@ The common checkpoint and accepted test times come from retained native data,
 not browser claims. Both proof verifiers use Barretenberg; this is not independent
 implementation diversity.
 
-## Executed version 1 evidence
+## Executed version 2 evidence
 
-These runs predate the current lifecycle/rate/refill policy. No v2 proof result
-is claimed yet. There is no v1 state import or migration; changing scope must
+Crow 9/58 passed both scenarios at cfrm
+`eddc92835b2e2b08bc431852c8ff3332203198eb`, with cmsg
+`80bbcf30e777b56a9ce6f8ea4a261f440c349eb0`:
+
+| Boundary | Answer | Close |
+| --- | --- | --- |
+| Actual Chromium checks | 224 | 229 |
+| Account proofs / Active peer proofs | 10 / 2 | 12 / 2 |
+| Independent Node account checks | 23 | 25 |
+| Live chronological Rust applies | 10 | 12 |
+| Current-own state checks | 21 | 25 |
+| Separate Rust ledger checks / child processes | 19 / 27 | 21 / 31 |
+
+The retained suite is `private-accounting-account-state-v2` under the tested
+cfrm revision. Its `SHA256SUMS` manifest hashes to
+`3cb58348d9991c06271c2c321fd16a40e1a1c1a2f72431bd565dc14322a6b980`.
+Downloaded evidence, manifests, nested peer artifacts and CI formatting were
+verified against it; the local metadata set is not the complete browser package.
+The account circuit/VK hashes are
+`76b2da89ccb347875dfcd90e380f120b30138c36d8a2556d47b62659a1fa65ea` /
+`1b05f243e422cf1a6a765af4dffffa1dd5255188ccf8ab31e6e562de3924c1bb`;
+the peer circuit/VK hashes are
+`5e856def181114a416cb0dbab4a55d7d15cace611e87b6f4d308d507354f9efd` /
+`f05a9e9e422e0850fe414a00087ae9269f7e8ef6b63cd8809644a05832f26b37`.
+
+Each browser count includes both peer contracts' 41 checks each. Genuine cmsg
+delegations supply the original device authority. The native gate verifies
+outgoing Active evidence before recipient consent, then both Active proofs
+before the actual introduction and decision. Answer restores both reservations;
+incoming settlement uses the original sender acknowledgment after that sender's
+credentials expire. Prepared cancellation receives real acceptance. Close spends
+the sender's reservation and restores the recipient's; recipient settlement
+succeeds after sender expiry. The additional outgoing obligation is activated,
+expires without a refund, and is followed by one due refill. Across the two
+scenarios all six private actions have real accepted proofs.
+
+Current-own checks reject absent/altered states and superseded states after
+settlement. Separate Rust contracts exercise competing signed successors,
+commit/response loss and exact retries. Evidence is retained in
+`answer/browser-evidence.json` and `close/browser-evidence.json`; these contain
+synthetic fixture data, not private witness paths or balances.
+
+Every proof is 14,656 bytes. Account proving took 27.23–28.07 seconds per
+transition in Answer and 26.99–29.59 seconds in Close. Peer proving took
+1.92–1.98 seconds in Answer and 1.93–1.97 seconds in Close. These are individual
+proof timings, not complete first-contact latency. The run used
+Chrome 152.0.7977.64, Node 24.19.0 and one browser proving thread. It loaded
+47,020,888 bytes in each scenario. Sampled Chromium-family PSS peaked at
+1,259,763,712 bytes in Answer and 1,256,017,920 bytes in Close (both about
+1.17 GiB). Answer had 2328/2334 complete samples and a maximum 8.67-second gap;
+Close had 2679/2682 complete samples and a maximum 8.77-second gap.
+These figures include the whole browser flow, exclude native/Node processes and are
+neither isolated prover memory nor an exact peak. Shared-host timing and
+sampling gaps prevent mobile or minimum-memory conclusions.
+
+The old-self renewal case is a successful ACVM execution using a synthetic
+renewed checkpoint and a real original receipt, not native renewal
+interoperability. Current-own checks remain snapshots rather than a lock
+through network delivery. Proof verification and durable ledger behavior are
+distinct boundaries; the browser and independent verifier use the same BB
+cryptographic engine.
+
+## Archived version 1 evidence
+
+These runs predate the current lifecycle/rate/refill policy. There is no v1
+state import or migration; changing scope must
 not permit a second lifetime genesis.
 
 Crow 9/46 at `79708b7251e6a983b3478bd9530068778940a436` passed nine actual
@@ -201,7 +267,9 @@ sampling can miss peaks and shared-host load affects timing. The cost prevents
 claiming readiness for the intended browser experience. Mobile viability and
 exact peak Wasm memory remain unverified.
 
-Rewards/disapproval, private matching Active proof integration, recovery/opening
-synchronization, authenticated policy/key migration, block/expiry/consent proofs,
-operator consistency and target-browser measurements remain outside this
-foundation. This evidence is neither a complete release nor a cryptographic audit.
+Private matching Active proofs and the native release gate are now exercised
+in both v2 fixtures above. Recovery/opening synchronization, authenticated
+policy/key migration, proof of opaque history evolution, operator consistency
+and target-browser measurements remain outside this evidence. Additional
+rewards/disapproval are unselected. This is neither a complete production
+release nor a cryptographic audit.

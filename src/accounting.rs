@@ -83,21 +83,25 @@ impl AccountPolicy {
     /// the current device's enrollment or a caller-controlled profile timestamp.
     pub fn capacity_at(&self, created_at: u64, now: u64) -> Result<u32, Error> {
         self.validate_age(created_at, now)?;
-        Ok(if now < created_at || now - created_at < self.newcomer_period {
-            self.initial_credit
-        } else {
-            self.maximum_available
-        })
+        Ok(
+            if now < created_at || now - created_at < self.newcomer_period {
+                self.initial_credit
+            } else {
+                self.maximum_available
+            },
+        )
     }
 
     /// Both incoming and outgoing reservations consume the same window count.
     pub fn admission_limit_at(&self, created_at: u64, now: u64) -> Result<u32, Error> {
         self.validate_age(created_at, now)?;
-        Ok(if now < created_at || now - created_at < self.newcomer_period {
-            self.newcomer_admissions
-        } else {
-            self.maximum_admissions
-        })
+        Ok(
+            if now < created_at || now - created_at < self.newcomer_period {
+                self.newcomer_admissions
+            } else {
+                self.maximum_admissions
+            },
+        )
     }
 
     /// All members in one rate window use the same public proof horizon.

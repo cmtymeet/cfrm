@@ -1,15 +1,15 @@
 # Peer reservation proof foundation
 
-**Version 2 source candidate; validation pending.** Crow 9/51 compiled the older
-v1 relation at `0ae9b897490bd48810b89fcc561e9e04128a80bc`. No v2 browser proof or operator
-acceptance interoperability result is claimed for this circuit. The measured
-account-state runs use a different relation. Production private accounting and
-protected release remain disabled.
+**Version 2 Answer and Close integrations passed.** In each scenario, two real
+browser peer proofs verify against genuine Rust account acceptances and
+feed the native cmsg protected-release gate. Production
+`AllocationLedger::resolve_private` remains closed; this fixture does not
+establish deployment, complete recovery or mobile feasibility. The older v1
+relation only compiled on Crow 9/51 at `0ae9b897490bd48810b89fcc561e9e04128a80bc`.
 
 This separate Noir relation proves membership of one Prepared (`1`) or Active
 (`2`) obligation in an already accepted account state. Settled (`3`), Canceled
-(`4`) and Expired (`5`) never
-qualifies. Both roles use this same circuit. Its public statement is for the
+(`4`) and Expired (`5`) never qualify. Both roles use this same circuit. Its public statement is for the
 authenticated peer channel only; it must never accompany a named operator
 request. Balance, total reserved credit, other slots, map positions/paths and
 the owner's secret remain private.
@@ -144,8 +144,9 @@ verification using separately loaded/pinned artifacts and the real adapter.
 
 The current source wires driver IPC to obtain the real acceptance **while the
 browser retains its private opening**, browser/Rust verification and the trusted
-Node adapter below. These changes await the next full validation run. Existing account browser results do not
-retain openings outside the page. Do not serialize witnesses to the driver or
+Node adapter below. Both integrations passed as recorded below.
+Account browser results do not retain openings outside the page.
+Do not serialize witnesses to the driver or
 replace this step with a synthetic acceptance.
 
 ### Live fixture bridge
@@ -189,10 +190,39 @@ cannot grant a new pair/nonce/group/lease, but proof verification alone does
 not establish that a certificate is the latest one.
 
 Only synthetic fixture pair presentations appear in test evidence. Production
-must keep these artifacts on the authenticated peer channel. No live bridge
-or new device-binding validation result is claimed until the corresponding CI
-run passes.
+must keep these artifacts on the authenticated peer channel.
+
+## Executed version 2 evidence
+
+Crow 9/58 at cfrm `eddc92835b2e2b08bc431852c8ff3332203198eb`, with cmsg
+`80bbcf30e777b56a9ce6f8ea4a261f440c349eb0`, passed 224 Chromium checks in Answer
+and 229 in Close. Each includes 41 checks for each of two real Active peer
+proofs. All four 14,656-byte proofs verified against genuine signed Rust
+acceptances while their state openings remained in the page. Proving took
+1.92–1.98 seconds; browser verification took 34.7–35.2 ms. The native cmsg process then invoked
+the independently pinned Node verifier and real Rust certificate verifier
+before recipient consent and protected release.
+
+Cases cover altered original-device authority, owner, pair, role, nonce,
+group, policy, history and challenge; changed authenticated paths; terminal
+phases; altered certificates/scopes and corrupted proofs. Positive verification
+is repeated after negatives. Answer's live account bridge accepted 10
+chronological proofs and passed 21 current-own checks; Close accepted 12 and
+passed 25. Both include old accepted state rejection after settlement.
+Separately, Answer passed 23 Node account checks and 19 Rust ledger checks
+across 27 child processes; Close passed 25 and 21 across 31 processes.
+These counts cover different boundaries and
+must not be presented as independent cryptographic implementations.
+
+Evidence is retained as `answer/browser-evidence.json` and
+`close/browser-evidence.json`. Whole-flow sampled Chromium PSS peaked at
+1,259,763,712 bytes in Answer and 1,256,017,920 bytes in Close (about 1.17 GiB
+each). Answer had 2328/2334 complete samples and a maximum 8.67-second gap;
+Close had 2679/2682 complete samples and a maximum 8.77-second gap. These figures
+include account proving; they are not this smaller peer circuit's isolated
+memory requirement. Exact peak and mobile feasibility remain unmeasured.
 
 See [the reservation protocol](../../../docs/private-reservation-protocol.md)
-for the two-sided release and durable recovery requirements. Circuit cost,
-actual browser memory and proof latency for this relation are unmeasured.
+for the two-sided release and durable recovery requirements, and the
+[account evidence](../account-state/README.md#executed-version-2-evidence) for
+the larger state-transition proof and remaining renewal/recovery limitations.

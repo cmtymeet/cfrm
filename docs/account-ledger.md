@@ -14,11 +14,14 @@ key, trusted time and durable SQLite storage. There is no successful default
 verifier. A verifier that merely checks a signature or returns success defeats
 the accounting relation; the storage API cannot turn it into a proof verifier.
 
-Policy values are mandatory. The versioned account-state foundation covers
-genesis, reservations, activation and settlement. It does not yet implement
-periodic issuance, answer rewards, disapproval, private reservation presentations
-or protected cmsg release. `AllocationLedger::resolve_private` remains closed.
-The older blind-permit allocation ledger is a separate mechanism.
+Policy values are mandatory. The v2 [reciprocity policy](reciprocity-policy.md)
+covers genesis, both reservation roles, activation, Answer/Close settlement,
+Prepared cancellation, outgoing expiry and bounded refill. It combines shared
+capacity with a permanent-root admission counter and newcomer probation.
+Extra Answer rewards and numerical disapproval are outside this policy.
+Separate peer presentations and cmsg's protected release gate compose with this
+ledger through a trusted verifier. `AllocationLedger::resolve_private` remains
+closed; the older blind-permit allocation ledger is a separate mechanism.
 
 One common checkpoint root can be admitted per configured time slot. Publishing
 a root is a trusted local operation and requires independently verifying its
@@ -33,6 +36,12 @@ proof digest, circuit/VK digests, independent random request ID, authorizing
 device and validity interval. Statements use canonical BN254 field encodings
 and bounded integers. Unknown serialized fields are rejected. Neither named
 endpoint's request contains a shared conversation identifier.
+
+Protocol-v2 statements bind all fourteen policy fields and the common
+`validUntil` proof horizon. A new request must commit before that horizon;
+its signed expiry cannot exceed it. That commit deadline does not expire an
+already accepted Active reservation. Its private lease and the original
+reservation-device authority bound protected first-payload release separately.
 
 A short SQLite transaction checks whether the request is already accepted or
 eligible for verification. Proof verification runs with all database locks

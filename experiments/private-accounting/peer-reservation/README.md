@@ -20,7 +20,7 @@ the owner's secret remain private.
 { version: 2,
   statement: {
     community, owner, peer, role, nonce, group, contactPolicyDigest,
-    historyDigest, phase, openedAt, accountPolicyDigest, stateVersion,
+    historyDigest, phase, openedAt, ownerAuthority, accountPolicyDigest, stateVersion,
     stateCommitment, challenge, presentationBinding
   },
   proofScope: { circuitDigest, verifyingKeyDigest },
@@ -35,9 +35,16 @@ statement and account-circuit proof scope. That account scope differs from the
 new peer circuit scope. The peer learns the certificate's metadata as well as
 the selected tuple; no certificate or presentation goes into its named update.
 
-The relation has **356 public field elements**, ordered exactly as `main.nr`
+The relation has **388 public field elements**, ordered exactly as `main.nr`
 and `publicInputValues()`. Arbitrary bytes32 use two big-endian u128 limbs;
-state and presentation field outputs require canonical BN254 encoding.
+state, owner-authority and presentation field outputs require canonical BN254 encoding.
+
+Peer-only `ownerAuthority` is the exact enrollment leaf committed when this
+owner reserved the slot. The native verifier supplies the initial MLS device
+key; its trusted Node adapter matches that key and permanent owner to the
+independently retained original cmsg delegation and recomputes the leaf. A
+sibling device cannot substitute its own enrollment for that reservation.
+This field never enters the named account statement.
 
 The public peer-only `openedAt` is tied to the selected slot's immutable common
 lease. Both peers must independently expect that same value. The host rejects
@@ -135,12 +142,45 @@ result contains peer-only presentation data; real deployments must not log it.
 `createPeerVerifier()` is portable to Node for independent public-proof
 verification using separately loaded/pinned artifacts and the real adapter.
 
-Integration still needs new driver IPC to obtain the real acceptance **while
-the browser retains its private opening**, plus browser/Rust and independent
-Node acceptance-verification adapters. Existing account browser results do not
+The current source wires driver IPC to obtain the real acceptance **while the
+browser retains its private opening**, browser/Rust verification and the trusted
+Node adapter below. These changes await the next full validation run. Existing account browser results do not
 retain openings outside the page. Do not serialize witnesses to the driver or
-replace this step with a synthetic acceptance. The existing account browser,
-account transition and ledger implementations are unchanged by this candidate.
+replace this step with a synthetic acceptance.
+
+### Live fixture bridge
+
+Account-mode builds also compile this relation and pin its separate circuit/VK
+under `public/peer-reservation/`. Its padded degree must fit the already pinned
+account setup; no additional setup service is contacted by the browser.
+
+The test-only loopback `/account-ledger` accepts public account proofs and real
+cmsg device authorizations. It reconstructs admission/device objects from the
+server-retained native enrollment and calls the actual Rust ledger. Each
+chronological proof receives its genuine signed acceptance before the page
+advances its private witness. The bridge accepts no opening or Merkle path.
+
+Native cmsg supplies independent challenges, context and initial device keys.
+Its trusted process adapter invokes `verify-request.mjs` with locally pinned
+manifest/enrollment/config paths. The adapter reconstructs the enrollment root,
+verifies the peer proof and calls the real Rust acceptance verifier. For the
+native own-current path only, it additionally queries the trusted own ledger
+for the exact accepted version/commitment. It never queries a counterpart's
+current account. Browser IPC exposes no current-account lookup.
+
+The live bridge's bounded checks query every newly accepted own state, reject
+absent/altered identities and states, and reject a previous accepted state after
+its successor, including settlement. This is a **read-only snapshot**, not a
+lock through delivery or evidence of distributed first-payload serialization.
+cmsg must separately enforce initial device ownership, durable payload
+consumption, closure history and lease validity. Historical Active certificates
+cannot grant a new pair/nonce/group/lease, but proof verification alone does
+not establish that a certificate is the latest one.
+
+Only synthetic fixture pair presentations appear in test evidence. Production
+must keep these artifacts on the authenticated peer channel. No live bridge
+or new device-binding validation result is claimed until the corresponding CI
+run passes.
 
 See [the reservation protocol](../../../docs/private-reservation-protocol.md)
 for the two-sided release and durable recovery requirements. Circuit cost,

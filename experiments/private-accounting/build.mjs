@@ -31,6 +31,13 @@ const started = performance.now();
 const compiled = await compile(createFileManager(resolve(circuitDir)));
 if (!compiled.program?.bytecode) throw new Error('Compiler produced no circuit');
 await writeFile('public/circuit.json', JSON.stringify(compiled.program));
+let peerCompiled;
+if (accountingMode === 'account-state-v2') {
+  peerCompiled = await compile(createFileManager(resolve('peer-reservation')));
+  if (!peerCompiled.program?.bytecode) throw new Error('Compiler produced no peer circuit');
+  await mkdir('public/peer-reservation', { recursive: true });
+  await writeFile('public/peer-reservation/circuit.json', JSON.stringify(peerCompiled.program));
+}
 const api = await Barretenberg.new({ backend: BackendType.Wasm, threads: 1, skipSrsInit: true,
   memory: { initial: 2048, maximum: 32768 } }); // Units are 64KiB pages in pinned source.
 try {
@@ -56,6 +63,15 @@ try {
   if (numPoints > maximumSetupPoints) throw new Error('Rounded setup exceeds resource bound');
   circuitStats.setupPlan = { requiredPoints, pointsPerChunk, numPoints, maximumSetupPoints, compressedG1Bytes: numPoints * 32 };
   await writeFile('public/circuit-stats.json', JSON.stringify(circuitStats, null, 2) + '\n');
+  let peerStats;
+  if (peerCompiled) {
+    peerStats = await api.circuitStats({ circuit: { name: 'peer-reservation-v2',
+      bytecode: new Uint8Array(gunzipSync(Buffer.from(peerCompiled.program.bytecode, 'base64'))), verificationKey: new Uint8Array() },
+      includeGatesPerOpcode: false,
+      settings: { ipaAccumulation: false, oracleHashType: 'poseidon2', disableZk: false, optimizedSolidityVerifier: false } });
+    await writeFile('public/peer-reservation/stats.json', JSON.stringify(peerStats, null, 2) + '\n');
+    if (!Number.isSafeInteger(Number(peerStats.numGatesDyadic)) || Number(peerStats.numGatesDyadic) + 1 > numPoints) throw new Error('Peer circuit exceeds the already pinned shared setup');
+  }
   let locked;
   try { locked = JSON.parse(await readFile(setupLockPath, 'utf8')); }
   catch (error) { if (error.code !== 'ENOENT' || process.env.RESOLVE_SETUP !== '1') throw error; }
@@ -92,6 +108,15 @@ try {
   if (!locked) await writeFile(setupLockPath, JSON.stringify(setupLock, null, 2) + '\n');
   const vk = await new UltraHonkBackend(compiled.program.bytecode, api).getVerificationKey(OPTIONS);
   await writeFile('public/vk.bin', vk);
+  let peerReservation;
+  if (peerCompiled) {
+    const peerVk = await new UltraHonkBackend(peerCompiled.program.bytecode, api).getVerificationKey(OPTIONS);
+    await writeFile('public/peer-reservation/vk.bin', peerVk);
+    peerReservation = { mode: 'peer-reservation-v2', publicInputs: 388,
+      circuitSha256: hash(await readFile('public/peer-reservation/circuit.json')), vkSha256: hash(peerVk),
+      circuitSourceSha256: hash(await readFile('peer-reservation/src/main.nr')),
+      nargoSha256: hash(await readFile('peer-reservation/Nargo.toml')), stats: peerStats, sharesAccountSetup: true };
+  }
   // The upstream browser bundle defaults to fetching an embedded data: URL.
   // Serve the pinned package's real WASM locally to retain connect-src 'self'.
   const backendDir = dirname(fileURLToPath(import.meta.resolve('@aztec/bb.js')));
@@ -114,7 +139,7 @@ try {
     wasm.push({ name: name + '.wasm', bytes: data.length, sha256: hash(data) });
   }
   const manifest = { version: 1, compiler: '1.0.0-beta.26', backend: '5.0.0', verifierTarget: OPTIONS.verifierTarget,
-    hashScheme, accountingMode, accountPolicy, poseidonSource: hashScheme === POSEIDON_SCHEME ? POSEIDON_SOURCE : null,
+    hashScheme, accountingMode, accountPolicy, peerReservation, poseidonSource: hashScheme === POSEIDON_SCHEME ? POSEIDON_SOURCE : null,
     circuitSha256: hash(await readFile('public/circuit.json')), vkSha256: hash(vk),
     circuitSourceSha256: hash(await readFile(circuitDir + '/src/main.nr')), requiredPoints, pointsPerChunk, numPoints, setup, wasm,
     ...(accountingMode === 'account-state-v2' ? { indexedSourceSha256: hash(await readFile(circuitDir + '/src/indexed.nr')) } : {}),

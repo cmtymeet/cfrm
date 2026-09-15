@@ -1,9 +1,10 @@
 import { Noir } from '@noir-lang/noir_js';
 import { UltraHonkBackend, UltraHonkVerifierBackend } from '@aztec/bb.js';
-import { OPTIONS, hex, unhex, random, sha, canonicalSignature, be } from '../common.mjs';
+import { OPTIONS, hex, unhex, random, sha, canonicalSignature, be, memberBytes } from '../common.mjs';
 import { fieldBytes, FR_MODULUS } from '../hashes.mjs';
-import { ACCOUNT_MODE, accountHashes, checkpointFromVerified, noirInput, receiptBytes, receiptDigest, ackBytes } from './hashes.mjs';
+import { ACCOUNT_MODE, accountHashes, checkpointFromVerified, noirInput, receiptBytes, receiptDigest, ackBytes, SparseTree } from './hashes.mjs';
 import { AccountWitness, statementBytes, publicInputValues, PUBLIC_INPUT_COUNT, validityHorizon } from './witness.mjs';
+import { runPeerReservationContract } from '../peer-reservation/browser.mjs';
 
 const ECDSA_ORDER = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
 const highS = signature => {
@@ -48,12 +49,30 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
     && enrolled.context.responderId === enrolled.entries[1].memberId, 'actual original sender and recipient are bound');
   const context = { nonce: Uint8Array.from(enrolled.context.introductionId), group: unhex(enrolled.groupBinding),
     contactPolicy: unhex(enrolled.contactPolicyDigest), openedAt: 100n };
+  const gate = await post({ command: 'prepareGate' });
+  assert(gate.ok, 'native cmsg prepares its own authenticated contexts and fresh peer challenges');
+  const ledgerPost = async input => {
+    const response = await fetch('/account-ledger', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+    if (!response.ok) throw new Error('Real account ledger bridge request failed'); return response.json();
+  };
+  const acceptedStates = new Map(); metrics.peerReservations = [];
   const noir = new Noir(circuit);
   const rejected = async (input, label) => {
     let failed = false; try { await noir.execute(noirInput(input)); } catch { failed = true; }
     assert(failed, label);
   };
   const mutate = async (candidate, label, change) => { const input = structuredClone(candidate.input); await change(input); await rejected(input, label); };
+  // Constraint-only counterexamples below use explicit synthetic checkpoints;
+  // they never enter the native enrollment verifier, operator or proof report.
+  async function constraintCheckpoint(changedIndex, changes) {
+    const entries = checkpoint.entries.map(entry => ({ ...entry }));
+    Object.assign(entries[changedIndex], changes);
+    const tree = await SparseTree.create(hashes.enrollmentNode);
+    for (const entry of entries) await tree.set(entry.index, await hashes.enrollment(community, entry.member, entry));
+    return { root: tree.root, entries: entries.map(entry => ({ ...entry, path: tree.path(entry.index) })) };
+  }
+  const enrollmentInput = e => ({ key: e.key, secret_hash: e.secretHash, start: e.start, end: e.end,
+    delegation_digest: e.delegationDigest, path: e.path, index: e.index });
   const setup = {};
   for (const record of manifest.setup) {
     const data = await bytes('/setup/' + record.name);
@@ -87,12 +106,39 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
       statementDigest: hex(await sha(statementBytes(candidate.statement))), proofDigest: hex(await sha(proof.proof)),
       issuedAt, expiresAt });
     assert(alternate.ok, 'independent request ID receives actual owner signature ' + label);
+    const acceptance = await ledgerPost({ action: 'apply', record: { statement: candidate.statement,
+      proof: hex(proof.proof), requestAuthorization: authorized.value.authorization } });
+    assert(acceptance.ok, 'actual Rust ledger durably accepts the public proof while opening stays in browser: ' + label);
+    acceptedStates.set(hex(candidate.statement.nextState), acceptance.value);
     metrics.proofs.push({ statement: candidate.statement, ownerIndex, proof: hex(proof.proof), publicInputs: proof.publicInputs,
       requestAuthorization: authorized.value.authorization,
       alternateRequestAuthorization: alternate.value.authorization,
       proofBytes: proof.proof.length, witnessMs, provingMs, verificationMs,
       verificationIncludesKeyGeneration: false });
     return candidate.next;
+  }
+  async function present(state, event, nativeContext, label) {
+    const pin = manifest.peerReservation;
+    if (pin?.mode !== 'peer-reservation-v2' || pin.publicInputs !== 388 || !pin.sharesAccountSetup
+        || Number(pin.stats.numGatesDyadic) + 1 > manifest.numPoints) throw new Error('Pinned peer circuit/setup contract');
+    const accountAcceptance = acceptedStates.get(hex(fieldBytes(state.commitment)));
+    if (!accountAcceptance) throw new Error('No real acceptance for private opening');
+    const ownEntry = checkpoint.entries.find(entry => equal(entry.member, state.owner.member));
+    const device = enrolled.entries.find(entry => equal(memberBytes(entry.memberId), state.owner.member));
+    if (!ownEntry || !device || !equal(memberBytes(device.originalDelegation.authorization.devicePublicKey), Uint8Array.from(nativeContext.devicePublicKey))) throw new Error('Native expected device differs from retained enrollment');
+    const expected = { ...nativeContext.expected, ownerAuthority: Array.from(fieldBytes(ownEntry.leaf)), accountPolicyDigest: Array.from(state.policyHash),
+      stateVersion: Number(state.version), stateCommitment: Array.from(fieldBytes(state.commitment)) };
+    const result = await runPeerReservationContract({ api, state, event, accountAcceptance,
+      circuitBytes: await bytes('/peer-reservation/circuit.json'), verificationKey: await bytes('/peer-reservation/vk.bin'),
+      peerProofScope: { circuitDigest: Array.from(unhex(pin.circuitSha256)), verifyingKeyDigest: Array.from(unhex(pin.vkSha256)) },
+      accountProofScope: { circuitDigest: Array.from(unhex(manifest.circuitSha256)), verifyingKeyDigest: Array.from(unhex(manifest.vkSha256)) },
+      context: { now: nativeContext.now, expected, accountPolicy: policy, enrollmentRoot: Array.from(fieldBytes(checkpoint.root)) },
+      verifyAccountAcceptance: async acceptance => {
+        const checked = await ledgerPost({ action: 'verifyAcceptance', acceptance });
+        return checked.ok && checked.value?.verified === true;
+      }, assert, stage });
+    assert(result.presentation.statement.phase === 2, 'only actual Active evidence enters the cmsg gate: ' + label);
+    metrics.peerReservations.push(result); return result.presentation;
   }
   const genesis = [];
   for (let i = 0; i < 2; i++) genesis.push(await AccountWitness.genesis({ hashes, community, policy,
@@ -113,6 +159,10 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
     const opening = structuredClone(genesis[0].next.opening); opening.createdAt = 100n; opening.frontier = 100n;
     input.next_state = fieldBytes(await genesis[0].next.commit(opening, 0n));
   });
+  await mutate(genesis[0], 'ACVM rejects coherent synthetic current enrollment expiring inside the proof horizon', async input => {
+    const truncated = await constraintCheckpoint(0, { end: input.valid_until - 1n });
+    input.enrollment_root = fieldBytes(truncated.root); input.owner_enrollment = enrollmentInput(truncated.entries[0]);
+  });
   let sender = await prove(genesis[0], 0, 'proved sender lifetime genesis');
   let recipient = await prove(genesis[1], 1, 'proved recipient lifetime genesis');
   const outgoing = await sender.reserve({ peerIndex: 1, role: 0, ...context, now: 100 });
@@ -127,6 +177,15 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   await mutate(outgoing, 'insertion rejects zero-key sentinel reuse', input => { input.own_map.leaf[0] = 1n; });
   await mutate(outgoing, 'enrollment rejects a noncanonical secret encoding', input => { input.owner_enrollment.secret_hash = be(FR_MODULUS, 32); });
   sender = await prove(outgoing, 0, 'proved outgoing reservation');
+  const activeSender = await sender.activate(outgoing.event, 100);
+  await mutate(activeSender, 'activation cannot replace an obligation peer', input => { input.slot.peer = input.owner; });
+  await mutate(activeSender, 'activation cannot change its original group', input => { input.slot.group[0] ^= 1; });
+  await mutate(activeSender, 'payload update cannot alter linked pointers', input => { input.own_map.leaf[3] = 1n; });
+  await mutate(activeSender, 'unknown action cannot refund a sender reservation', input => { input.action = 7; });
+  sender = await prove(activeSender, 0, 'proved sender activation');
+  const outgoingPresentation = await present(sender, outgoing.event, gate.value.outgoing, 'original initiator');
+  assert((await post({ command: 'authorizeIncoming', outgoingPresentation })).ok,
+    'native cmsg independently verifies real Active outgoing proof before explicit incoming consent');
   const incoming = await recipient.reserve({ peerIndex: 0, role: 1, ...context, now: 100 });
   recipient = await prove(incoming, 1, 'proved incoming reservation');
   // A second pending obligation in the other role exercises one shared balance
@@ -136,17 +195,14 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   await mutate(secondary, 'both roles cannot use separate available balances', input => { input.old.available = BigInt(policy.initialCredit); });
   recipient = await prove(secondary, 1, 'proved second role shares available capacity');
   assert(recipient.opening.reserved === BigInt(policy.incomingReservation) + BigInt(policy.outgoingReservation), 'both role amounts remain reserved together');
-  const activeSender = await sender.activate(outgoing.event, 100);
-  await mutate(activeSender, 'activation cannot replace an obligation peer', input => { input.slot.peer = input.owner; });
-  await mutate(activeSender, 'activation cannot change its original group', input => { input.slot.group[0] ^= 1; });
-  await mutate(activeSender, 'payload update cannot alter linked pointers', input => { input.own_map.leaf[3] = 1n; });
-  await mutate(activeSender, 'unknown action cannot refund a sender reservation', input => { input.action = 7; });
-  sender = await prove(activeSender, 0, 'proved sender activation');
   const activeRecipient = await recipient.activate(incoming.event, 100);
   recipient = await prove(activeRecipient, 1, 'proved recipient activation preserves other role');
   if (configuration.accountScenario === 'close') {
     recipient = await prove(await recipient.activate(secondary.event, 100), 1, 'proved independent outgoing slot activation for later abandonment');
   }
+  const incomingPresentation = await present(recipient, incoming.event, gate.value.incoming, 'original recipient');
+  assert((await post({ command: 'bindGate', outgoingPresentation, incomingPresentation })).ok,
+    'native cmsg independently verifies both real Active proofs and binds protected release');
   const secondaryRoot = recipient.outgoing.root;
   stage('actual-cmsg-' + configuration.accountScenario);
   // Produce the actual decision while both owners can authorize their named
@@ -228,6 +284,20 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   }
   const pendingRecipient = recipient;
   const settledRecipient = await recipient.settle(incoming.event, resolution, acknowledgment, 300);
+  await mutate(settledRecipient, 'historical self receipt cannot replace its reserved owner authority', input => {
+    input.receipt_owner_enrollment.delegation_digest[0] ^= 1;
+  });
+  {
+    const renewedKey = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign','verify']);
+    const raw = new Uint8Array(await crypto.subtle.exportKey('raw', renewedKey.publicKey)).slice(1);
+    const synthetic = await constraintCheckpoint(1, { key: raw, start: 200n, delegationDigest: random() });
+    const historicalSelf = structuredClone(settledRecipient.input);
+    historicalSelf.enrollment_root = fieldBytes(synthetic.root);
+    historicalSelf.owner_enrollment = enrollmentInput(synthetic.entries[1]);
+    await noir.execute(noirInput(historicalSelf));
+    assert(true, 'ACVM-only synthetic renewal retains real original self receipt and exact nested ACK authority');
+    metrics.historicalSelfRenewal = 'constraint-only synthetic current checkpoint; real old receipt; no native renewal interoperability claim';
+  }
   assert(settledRecipient.next.opening.available === recipient.opening.available + BigInt(policy.incomingReservation)
     && settledRecipient.next.opening.reserved === recipient.opening.reserved - BigInt(policy.incomingReservation),
   'recipient actual Answer/Close restores exactly its own reservation');

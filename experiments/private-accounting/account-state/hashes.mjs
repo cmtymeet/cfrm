@@ -70,7 +70,7 @@ export function accountHashes(api) {
     obligation: (event, slot, phase) => hash(4,
       [event, integer(slot.role, 8), ...limbs32(slot.peer), ...limbs32(slot.nonce), ...limbs32(slot.group),
         ...limbs32(slot.contactPolicy), integer(slot.amount, 32), integer(phase, 8),
-        time(slot.admittedAt), slot.peerAuthority]),
+        time(slot.admittedAt), slot.peerAuthority, slot.ownerAuthority]),
   };
 }
 

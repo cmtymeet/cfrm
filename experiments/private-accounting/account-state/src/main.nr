@@ -25,7 +25,7 @@ struct Opening {
 struct Obligation {
     role: u8, peer: [u8; 32], nonce: [u8; 32], group: [u8; 32],
     contact_policy: [u8; 32], amount: u32, phase: u8,
-    admitted_at: u64, peer_authority: Field,
+    admitted_at: u64, peer_authority: Field, owner_authority: Field,
 }
 
 struct MapWitness {
@@ -77,8 +77,9 @@ fn enrollment_leaf(community: [u8; 32], member: [u8; 32], enrolled: Enrollment) 
 }
 
 fn verify_enrollment(community: [u8; 32], member: [u8; 32], enrolled: Enrollment,
-    checkpoint: Field, now: u64) {
+    checkpoint: Field, now: u64, valid_until: u64) {
     assert((enrolled.start > 0) & (enrolled.start <= now) & (now < enrolled.end));
+    assert(enrolled.end >= valid_until);
     assert(enrolled.end <= SAFE);
     assert(enrolled.delegation_digest != [0; 32]);
     let mut current = enrollment_leaf(community, member, enrolled);
@@ -92,12 +93,12 @@ fn verify_enrollment(community: [u8; 32], member: [u8; 32], enrolled: Enrollment
 }
 
 fn verify_peer_authority(community: [u8; 32], slot: Obligation, peer: Enrollment,
-    checkpoint: Field, now: u64) {
+    checkpoint: Field, now: u64, valid_until: u64) {
     // Original peer authority was checked at reservation. Expiry does not
     // invalidate a receipt/ack signed within that historical validity period.
     // A different/renewed delegation needs current independent enrollment.
     if enrollment_leaf(community, slot.peer, peer) != slot.peer_authority {
-        verify_enrollment(community, slot.peer, peer, checkpoint, now);
+        verify_enrollment(community, slot.peer, peer, checkpoint, now, valid_until);
     }
 }
 
@@ -150,7 +151,7 @@ fn obligation_hash(event: Field, slot: Obligation, phase: u8) -> Field {
     let p = limbs(slot.peer); let n = limbs(slot.nonce); let g = limbs(slot.group);
     let c = limbs(slot.contact_policy);
     hash([DOMAIN, 4, event, slot.role as Field, p[0], p[1], n[0], n[1], g[0], g[1],
-        c[0], c[1], slot.amount as Field, phase as Field, slot.admitted_at as Field, slot.peer_authority])
+        c[0], c[1], slot.amount as Field, phase as Field, slot.admitted_at as Field, slot.peer_authority, slot.owner_authority])
 }
 
 fn receipt_bytes(community: [u8; 32], responder: [u8; 32], other: [u8; 32],
@@ -232,6 +233,7 @@ fn main(
     newcomer_period: pub u64, rate_window: pub u64, newcomer_admissions: pub u32,
     maximum_admissions: pub u32, refill_period: pub u64, refill_units: pub u32, abandon_after: pub u64,
     owner_secret: [u8; 32], owner_enrollment: Enrollment, peer_enrollment: Enrollment,
+    receipt_owner_enrollment: Enrollment,
     old: Opening, new_blind: [u8; 32], action: u8, slot: Obligation,
     own_map: MapWitness, opposite_map: MapWitness, pair_map: MapWitness,
     pair_exists: bool, resolution: Resolution, acknowledgment: Acknowledgment,
@@ -260,7 +262,7 @@ fn main(
     assert((owner_secret != [0; 32]) & (new_blind != [0; 32]));
     let registered_secret = secret_hash(community, owner_secret);
     assert(registered_secret == field(owner_enrollment.secret_hash));
-    verify_enrollment(community, owner, owner_enrollment, field(enrollment_root), now);
+    verify_enrollment(community, owner, owner_enrollment, field(enrollment_root), now, valid_until);
     assert(field(next_state) != 0);
     if genesis {
         assert((previous_version == 0) & (next_version == 0));
@@ -320,8 +322,9 @@ fn main(
             let count = if old.admission_epoch == epoch { old.admissions as u64 + 1 } else { 1 };
             assert(count <= admission_limit as u64);
             admission_epoch = epoch; admissions = count as u32;
-            verify_enrollment(community, slot.peer, peer_enrollment, field(enrollment_root), now);
+            verify_enrollment(community, slot.peer, peer_enrollment, field(enrollment_root), now, valid_until);
             assert(slot.peer_authority == enrollment_leaf(community, slot.peer, peer_enrollment));
+            assert(slot.owner_authority == enrollment_leaf(community, owner, owner_enrollment));
             // Same event cannot be inserted under another role or a new path.
             indexed::absent(other_root, other_count, event,
                 opposite_map.leaf, opposite_map.index, opposite_map.path);
@@ -376,15 +379,19 @@ fn main(
                     assert(valid_until - slot.admitted_at <= abandon_after);
                 }
                 if slot.role == 0 {
-                    verify_peer_authority(community, slot, peer_enrollment, field(enrollment_root), now);
+                    verify_peer_authority(community, slot, peer_enrollment, field(enrollment_root), now, valid_until);
                 }
                 // Incoming owner closure has no current-eligibility dependency
                 // on the silent counterpart. Historical authority is in slot.
-                let signer = if slot.role == 0 { peer_enrollment } else { owner_enrollment };
+                if slot.role == 1 {
+                    let authority = enrollment_leaf(community, owner, receipt_owner_enrollment);
+                    assert((authority == slot.owner_authority) | (authority == enrollment_leaf(community, owner, owner_enrollment)));
+                }
+                let signer = if slot.role == 0 { peer_enrollment } else { receipt_owner_enrollment };
                 verify_resolution(community, owner, slot, signer, resolution, now);
                 if (slot.role == 1) & (resolution.kind == 1) {
-                    verify_peer_authority(community, slot, peer_enrollment, field(enrollment_root), now);
-                    verify_acknowledgment(community, owner, slot, owner_enrollment,
+                    verify_peer_authority(community, slot, peer_enrollment, field(enrollment_root), now, valid_until);
+                    verify_acknowledgment(community, owner, slot, receipt_owner_enrollment,
                         peer_enrollment, resolution, acknowledgment, now);
                 }
                 // Recipient Close restores the recipient's reservation, while

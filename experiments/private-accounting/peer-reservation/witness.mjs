@@ -5,9 +5,9 @@ import { SAFE } from '../account-state/hashes.mjs';
 
 export const PEER_MODE = 'peer-reservation-v2';
 export const PEER_DOMAIN = 0x6366726d2e706565722d7265736572766174696f6e2e7632n;
-export const PUBLIC_INPUT_COUNT = 356;
+export const PUBLIC_INPUT_COUNT = 388;
 export const STATEMENT_KEYS = ['community','owner','peer','role','nonce','group','contactPolicyDigest',
-  'historyDigest','phase','openedAt','accountPolicyDigest','stateVersion','stateCommitment','challenge','presentationBinding'];
+  'historyDigest','phase','openedAt','ownerAuthority','accountPolicyDigest','stateVersion','stateCommitment','challenge','presentationBinding'];
 export const EXPECTED_KEYS = STATEMENT_KEYS.filter(name => name !== 'presentationBinding');
 export const exact = (value, keys) => value !== null && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
@@ -26,12 +26,12 @@ export function publicInputValues(statement) {
   const s = statement;
   if (![0, 1].includes(s.role) || ![1, 2].includes(s.phase) || safeInteger(s.stateVersion) === 0n || safeInteger(s.openedAt) === 0n) throw new Error('Peer role/phase/version/opened-at');
   const bytes = name => Array.from(bytes32(s[name]), BigInt);
-  for (const name of ['stateCommitment','presentationBinding']) fieldValue(bytes32(s[name]));
+  for (const name of ['ownerAuthority','stateCommitment','presentationBinding']) fieldValue(bytes32(s[name]));
   if (!s.challenge.some(Boolean) || !s.nonce.some(Boolean) || !s.stateCommitment.some(Boolean)
       || equalBytes(s.owner, s.peer)) throw new Error('Peer challenge/nonce/state/identity');
   const values = [...bytes('community'), ...bytes('owner'), ...bytes('peer'), BigInt(s.role),
     ...bytes('nonce'), ...bytes('group'), ...bytes('contactPolicyDigest'), ...bytes('historyDigest'), BigInt(s.phase),
-    safeInteger(s.openedAt), ...bytes('accountPolicyDigest'), safeInteger(s.stateVersion), ...bytes('stateCommitment'), ...bytes('challenge'), ...bytes('presentationBinding')];
+    safeInteger(s.openedAt), ...bytes('ownerAuthority'), ...bytes('accountPolicyDigest'), safeInteger(s.stateVersion), ...bytes('stateCommitment'), ...bytes('challenge'), ...bytes('presentationBinding')];
   if (values.length !== PUBLIC_INPUT_COUNT) throw new Error('Peer public input count');
   return values;
 }
@@ -56,7 +56,8 @@ export async function preparePeerReservation({ api, state, event, historyDigest,
   const binding = await presentationBinding(api, state.ownerSecret, commitment, payload, challenge, historyDigest);
   const statement = { community: Array.from(state.community), owner: Array.from(state.owner.member), peer: Array.from(slot.peer),
     role: slot.role, nonce: Array.from(slot.nonce), group: Array.from(slot.group), contactPolicyDigest: Array.from(slot.contactPolicy),
-    historyDigest: Array.from(historyDigest), phase: slot.phase, openedAt: Number(slot.admittedAt), accountPolicyDigest: Array.from(state.policyHash),
+    historyDigest: Array.from(historyDigest), phase: slot.phase, openedAt: Number(slot.admittedAt),
+    ownerAuthority: Array.from(fieldBytes(slot.ownerAuthority)), accountPolicyDigest: Array.from(state.policyHash),
     stateVersion: Number(state.version), stateCommitment: Array.from(commitment), challenge: Array.from(challenge),
     presentationBinding: Array.from(fieldBytes(binding)) };
   publicInputValues(statement);
@@ -69,5 +70,5 @@ export async function preparePeerReservation({ api, state, event, historyDigest,
       incoming_root: o.incomingRoot, incoming_count: o.incomingCount, pair_root: o.pairRoot, pair_count: o.pairCount,
       frontier: o.frontier, created_at: o.createdAt, admission_epoch: o.admissionEpoch, admissions: o.admissions, blind: o.blind },
     selected: { leaf: selected.leaf, index: selected.index, path: selected.path },
-    amount: slot.amount, peer_authority: slot.peerAuthority } };
+    amount: slot.amount, peer_authority: slot.peerAuthority, owner_authority: fieldBytes(slot.ownerAuthority) } };
 }

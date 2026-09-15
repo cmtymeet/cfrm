@@ -21,7 +21,7 @@ frontier conservatively anchored at `validUntil`, and zero admissions in the
 current window. Outgoing and
 incoming reservations debit **one available balance**. Each map entry records
 the role, full original peer/nonce/group/contact policy, amount, admission time,
-historical peer authority and Prepared/Active/Settled/Canceled/Expired phase. Every terminal transition retains
+historical peer and owner authority and Prepared/Active/Settled/Canceled/Expired phase. Every terminal transition retains
 the entry as a tombstone. New reservations prove event absence in both role
 maps, preventing role changes from resetting an event. A third map retains
 lifetime pair membership; repeated pairs receive no invented extra reward.
@@ -84,12 +84,21 @@ secret and event-marker domains remain the measured P2 domains; account-state
 and delegation-leaf encodings are separately versioned. This is not a migration
 proof for existing single-slot commitments or a key-rotation/reset mechanism.
 
-Current owner eligibility is required. For a counterpart signature, an exact
+Current owner eligibility is required throughout the common proof horizon;
+the owner and any new/renewed counterpart delegation must expire no earlier
+than `validUntil`. For a counterpart signature, an exact
 match to the slot's reservation-time authority permits an archived receipt or
 acknowledgment signed during that authority's validity. A different delegated
 key requires current independently verified enrollment. Receipt and acknowledgment
 times must match the original event's ordering. A recipient can close after its
 silent counterpart expires.
+
+The slot also retains the exact reservation-time owner delegation leaf. An
+incoming receipt may use that original authority or the owner's currently
+proved authority, while current account authorization remains independently
+mandatory. The acknowledgment hashes the original receipt and original signer
+delegation. A bounded ACVM case uses a synthetic renewed checkpoint with a real
+original receipt; actual native renewal interoperability remains untested.
 
 ## Actual cmsg signatures
 
@@ -117,6 +126,11 @@ block/consent enforcement remain necessary for protected release.
 Select `ACCOUNTING_MODE=account-state-v2` and
 `HASH_SCHEME=poseidon2-bn254-fixed-128-v1`. Separate `ACCOUNT_SCENARIO=answer`
 and `close` runs use fresh actual cmsg fixtures and the same compiled circuit/VK.
+The current candidate submits every proof to a real persistent Rust ledger
+before advancing the page-local opening. Two separate Active peer proofs then
+feed the native cmsg gate through its trusted verifier; see the
+[peer bridge contract](../peer-reservation/README.md#live-fixture-bridge).
+This integration and v2 policy await their full validation run.
 Setup hashes live in `account-state/setup-lock.json`; only explicit initial
 `RESOLVE_SETUP=1` may create it. No browser witness is sent for remote proving.
 

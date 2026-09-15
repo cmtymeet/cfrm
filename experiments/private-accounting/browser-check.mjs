@@ -23,7 +23,7 @@ const root = resolve('dist');
 const profile = await mkdtemp(join(tmpdir(), 'cfrm-accounting-'));
 const evidence = { source: process.env.CI_COMMIT_SHA, runtime: process.version, hashScheme, accountingMode, accountScenario, ok: false,
   fixtureRequests: 0, forbiddenRequests: [], loadedBytes: 0, browserErrors: [] };
-let fixture, browser, socket, origin, fixtureWaiting, fixtureTimer, deadline, browserMemory;
+let fixture, browser, socket, origin, fixtureWaiting, fixtureTimer, deadline, browserMemory, ledgerBridge;
 let fixtureOutput = '', fixtureStderr = '', stderr = '', enrolled;
 const pending = new Map(); let nextId = 1;
 const loaded = new Set();
@@ -33,7 +33,7 @@ function captureClose(child) { closed.set(child, new Promise(resolve => child.on
 // Read only our Chromium PID and descendants discovered through its thread
 // children files. Never enumerate /proc globally or retain process contents.
 function sampleBrowserMemory(child) {
-  const intervalMs = 200, sampleDeadlineMs = 750, maximumDurationMs = 600_000;
+  const intervalMs = 200, sampleDeadlineMs = 750, maximumDurationMs = accountingMode === 'account-state-v2' ? 900_000 : 600_000;
   const maximumProcesses = 128, maximumThreads = 256, maximumReads = 2048;
   const began = performance.now();
   const report = {
@@ -214,6 +214,9 @@ function publicCommand(value) {
     if (value?.command === 'answer') return exact(value, ['command']) && accountScenario === 'answer';
     if (value?.command === 'close') return exact(value, ['command','now']) && accountScenario === 'close' && value.now === 100;
     if (value?.command === 'advance') return exact(value, ['command','now']) && [300,600].includes(value.now);
+    if (value?.command === 'prepareGate') return exact(value, ['command']);
+    if (value?.command === 'authorizeIncoming') return exact(value, ['command','outgoingPresentation']);
+    if (value?.command === 'bindGate') return exact(value, ['command','outgoingPresentation','incomingPresentation']);
     if (value?.command === 'ack') return exact(value, ['command','answer']) && accountScenario === 'answer';
     if (['verifyReceipt','verifyHistoricalReceipt'].includes(value?.command)) return exact(value, ['command','receipt','now']) && [100,300].includes(value.now);
     if (['verifyAcknowledgment','verifyHistoricalAcknowledgment'].includes(value?.command)) return exact(value, ['command','acknowledgment','now']) && [100,300].includes(value.now);
@@ -234,12 +237,14 @@ function publicCommand(value) {
 async function callFixture(value) {
   if (!publicCommand(value) || fixtureWaiting || ++evidence.fixtureRequests > (accountingMode === 'account-state-v2' ? 48 : 16)) throw new Error('Public fixture request bound');
   const result = new Promise((resolve, reject) => { fixtureWaiting = { resolve, reject }; });
-  fixtureTimer = setTimeout(() => failFixture(new Error('Enrollment fixture deadline')), 15_000);
+  fixtureTimer = setTimeout(() => failFixture(new Error('Native cmsg fixture deadline')),
+    ['authorizeIncoming','bindGate'].includes(value.command) ? 270_000 : 15_000);
   fixture.stdin.write(JSON.stringify(value) + '\n');
   const response = await result;
   if ((value.action === 'enroll' || value.command === 'enroll') && response.ok) {
     if (enrolled) throw new Error('Enrollment genesis already created');
     enrolled = response.value;
+    if (ledgerBridge) await ledgerBridge.enroll(enrolled);
   }
   return response;
 }
@@ -254,11 +259,12 @@ const server = createServer(async (request, response) => {
       if (request.method !== 'GET') { response.writeHead(405).end(); return; }
       response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ accountScenario })); return;
     }
-    if (pathname === '/fixture') {
+    if (pathname === '/fixture' || (pathname === '/account-ledger' && ledgerBridge)) {
       if (request.method !== 'POST' || request.headers.origin !== origin || !request.headers['content-type']?.startsWith('application/json')) { response.writeHead(400).end(); return; }
       const chunks = []; let size = 0;
-      for await (const chunk of request) { size += chunk.length; if (size > 65536) { response.writeHead(413).end(); return; } chunks.push(chunk); }
-      const result = await callFixture(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      for await (const chunk of request) { size += chunk.length; if (size > 262144) { response.writeHead(413).end(); return; } chunks.push(chunk); }
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      const result = pathname === '/fixture' ? await callFixture(input) : await ledgerBridge.call(input);
       response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(result)); return;
     }
     if (request.method !== 'GET') { response.writeHead(405).end(); return; }
@@ -270,7 +276,7 @@ const server = createServer(async (request, response) => {
     response.writeHead(200, { 'Content-Type': mime[extname(file)] }).end(data);
   } catch { if (!response.headersSent) response.writeHead(500); response.end(); }
 });
-server.requestTimeout = 20_000; server.headersTimeout = 20_000;
+server.requestTimeout = 280_000; server.headersTimeout = 20_000;
 const command = (method, params = {}) => {
   const id = nextId++; const result = new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
   socket.send(JSON.stringify({ id, method, params })); return result;
@@ -286,8 +292,19 @@ async function stop(child) {
   finally { clearTimeout(force); clearTimeout(bound); }
 }
 try {
+  let fixtureEnvironment = process.env;
+  if (accountingMode === 'account-state-v2') {
+    if (!process.env.ACCOUNTING_ARTIFACT_DIR) throw new Error('Owned account artifact directory required');
+    const { createLedgerBridge } = await import('./peer-reservation/ledger-bridge.mjs');
+    ledgerBridge = await createLedgerBridge({ directory: await mkdtemp(join(resolve(process.env.ACCOUNTING_ARTIFACT_DIR), 'live-ledger-')),
+      manifestPath: resolve('public/manifest.json'), binary: process.env.ACCOUNTING_LEDGER_FIXTURE });
+    evidence.liveLedger = ledgerBridge.evidence;
+    fixtureEnvironment = { ...process.env, CMSG_PEER_VERIFIER_NODE: process.execPath,
+      CMSG_PEER_VERIFIER_SCRIPT: ledgerBridge.paths.peerVerifier, CMSG_PEER_VERIFIER_MANIFEST: ledgerBridge.paths.manifest,
+      CMSG_PEER_VERIFIER_ENROLLMENT: ledgerBridge.paths.enrollment, CMSG_PEER_VERIFIER_LEDGER: ledgerBridge.paths.ledger };
+  }
   server.listen(0, '127.0.0.1'); await once(server, 'listening'); origin = `http://127.0.0.1:${server.address().port}`;
-  fixture = captureClose(spawn(fixtureBinary, accountingMode === 'account-state-v2' ? ['--serve'] : [], { stdio: ['pipe', 'pipe', 'pipe'] }));
+  fixture = captureClose(spawn(fixtureBinary, accountingMode === 'account-state-v2' ? ['--serve'] : [], { stdio: ['pipe', 'pipe', 'pipe'], env: fixtureEnvironment }));
   fixture.on('error', error => failFixture(error)); fixture.stdin.on('error', error => failFixture(error));
   fixture.stderr.on('data', chunk => { fixtureStderr = (fixtureStderr + chunk).slice(-4096); });
   fixture.stdout.on('data', chunk => {
@@ -347,7 +364,8 @@ try {
   }
   if (!loaded.has(navigation.loaderId)) throw new Error('Browser navigation deadline');
   const running = command('Runtime.evaluate', { expression: '(async () => { while (!window.accountingDone) await new Promise(r => setTimeout(r, 100)); return await window.accountingDone; })()', awaitPromise: true, returnByValue: true });
-  const result = await Promise.race([running, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('Browser proving deadline (8 minutes)')), 480_000); })]);
+  const runLimit = accountingMode === 'account-state-v2' ? 900_000 : 480_000;
+  const result = await Promise.race([running, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('Bounded browser proof/ledger deadline')), runLimit); })]);
   clearTimeout(deadline);
   if (result.exceptionDetails || !result.result?.value) throw new Error('No browser result');
   evidence.contract = result.result.value;
@@ -360,6 +378,7 @@ try {
   const { verifyResults } = await import('./verify.mjs');
   evidence.independent = await verifyResults(evidence.contract, enrolled);
   if (accountingMode === 'account-state-v2') {
+    if (evidence.contract.peerReservations?.length !== 2 || evidence.liveLedger.applies !== expectedProofs) throw new Error('Actual peer/ledger bridge contract incomplete');
     const { runRustAccountLedgerContract } = await import('./account-state/ledger-contract.mjs');
     evidence.ledger = await runRustAccountLedgerContract(evidence.contract, enrolled);
   }
@@ -376,6 +395,8 @@ try {
 } finally {
   clearTimeout(deadline); failFixture(new Error('Fixture closed')); socket?.close();
   const cleanupErrors = [];
+  try { await ledgerBridge?.close(); }
+  catch { cleanupErrors.push('Live ledger child cleanup failed'); }
   try { await browserMemory?.stop(); }
   catch { cleanupErrors.push('Browser memory sampler cleanup failed'); }
   for (const child of [browser, fixture]) { try { await stop(child); } catch (error) { cleanupErrors.push(String(error)); } }

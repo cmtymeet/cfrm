@@ -27,7 +27,7 @@ const openingInput = s => ({ available: s.available, reserved: s.reserved,
   created_at: s.createdAt, admission_epoch: s.admissionEpoch, admissions: s.admissions, blind: s.blind });
 const slotInput = s => ({ role: s.role, peer: s.peer, nonce: s.nonce, group: s.group,
   contact_policy: s.contactPolicy, amount: s.amount, phase: s.phase,
-  admitted_at: s.admittedAt, peer_authority: s.peerAuthority });
+  admitted_at: s.admittedAt, peer_authority: s.peerAuthority, owner_authority: s.ownerAuthority });
 const resolutionInput = r => ({ kind: r.kind, issued_at: r.issuedAt, history_digest: r.historyDigest,
   ed25519_receipt_digest: r.ed25519ReceiptDigest, signature: r.signature });
 const emptyResolution = now => ({ kind: 2, issuedAt: now, historyDigest: zeros(), ed25519ReceiptDigest: zeros(), signature: new Uint8Array(64) });
@@ -102,9 +102,10 @@ export class AccountWitness {
       previous_version: this.version, next_version: this.version + 1n,
       previous_state: fieldBytes(this.commitment), next_state: zeros(), settlement_marker: zeros(), ...policyInput(this.policy),
       owner_secret: this.ownerSecret, owner_enrollment: enrollmentInput(this.owner), peer_enrollment: enrollmentInput(this.owner),
+      receipt_owner_enrollment: enrollmentInput(this.owner),
       old: openingInput(this.opening), new_blind: newBlind, action: 1,
       slot: slotInput({ role: 0, peer: zeros(), nonce: zeros(), group: zeros(), contactPolicy: zeros(), amount: 0,
-        phase: 1, admittedAt: BigInt(now), peerAuthority: 0n }),
+        phase: 1, admittedAt: BigInt(now), peerAuthority: 0n, ownerAuthority: 0n }),
       own_map: emptyMapWitness(), opposite_map: emptyMapWitness(), pair_map: emptyMapWitness(), pair_exists: false,
       resolution: resolutionInput(emptyResolution(now)), acknowledgment: { issued_at: BigInt(now), signature: new Uint8Array(64) } };
   }
@@ -144,7 +145,7 @@ export class AccountWitness {
     const amount = BigInt(role === 0 ? this.policy.outgoingReservation : this.policy.incomingReservation);
     if (this.opening.available < amount) throw new Error('Insufficient shared available capacity');
     const slot = { peerIndex, role, peer: peer.member, nonce, group, contactPolicy, amount, phase: 1,
-      admittedAt: opened, peerAuthority: peer.leaf };
+      admittedAt: opened, peerAuthority: peer.leaf, ownerAuthority: this.owner.leaf };
     const own = role === 0 ? this.outgoing : this.incoming, opposite = role === 0 ? this.incoming : this.outgoing;
     const inserted = await own.insert(event, await this.hashes.obligation(event, slot, 1));
     const input = this.input(random(), now), next = this.clone();
@@ -159,7 +160,7 @@ export class AccountWitness {
     next.slots.set(event.toString(), slot);
     const result = await this.finish(next, input); result.event = event; return result;
   }
-  async change(event, action, resolution, acknowledgment, now = this.now, peerEnrollment) {
+  async change(event, action, resolution, acknowledgment, now = this.now, peerEnrollment, receiptOwnerEnrollment) {
     const at = this.at(now);
     const oldSlot = this.slots.get(event.toString()); if (!oldSlot) throw new Error('Unknown private obligation');
     if (![2, 3, 4, 5].includes(action) || oldSlot.phase !== ([2, 4].includes(action) ? 1 : 2)) throw new Error('Invalid obligation phase');
@@ -172,6 +173,7 @@ export class AccountWitness {
     const slot = structuredClone(oldSlot), next = this.clone(), input = this.input(random(), now);
     Object.assign(input, { action, slot: slotInput(slot),
       peer_enrollment: enrollmentInput(peerEnrollment ?? this.checkpoint.entries[slot.peerIndex]) });
+    input.receipt_owner_enrollment = enrollmentInput(receiptOwnerEnrollment ?? this.owner);
     const phase = action === 2 ? 2 : action === 4 ? 4 : action === 5 ? 5 : 3;
     const changed = await (slot.role === 0 ? this.outgoing : this.incoming).update(event,
       await this.hashes.obligation(event, slot, phase));
@@ -195,8 +197,8 @@ export class AccountWitness {
     return this.finish(next, input);
   }
   activate(event, now) { return this.change(event, 2, undefined, undefined, now); }
-  settle(event, resolution, acknowledgment, now, peerEnrollment) {
-    return this.change(event, 3, resolution, acknowledgment, now, peerEnrollment);
+  settle(event, resolution, acknowledgment, now, peerEnrollment, receiptOwnerEnrollment) {
+    return this.change(event, 3, resolution, acknowledgment, now, peerEnrollment, receiptOwnerEnrollment);
   }
   cancel(event, now) { return this.change(event, 4, undefined, undefined, now); }
   expire(event, now) { return this.change(event, 5, undefined, undefined, now); }

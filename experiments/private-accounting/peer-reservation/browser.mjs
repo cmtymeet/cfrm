@@ -1,5 +1,5 @@
-// Callable contract, not wired into the browser driver. Requires a genuine
-// accepted live AccountWitness and a real host/Rust acceptance verifier.
+// Browser contract over a genuinely accepted live AccountWitness and a real
+// host/Rust acceptance verifier. Openings and paths stay inside the page.
 import { Noir } from '@noir-lang/noir_js';
 import { UltraHonkBackend } from '@aztec/bb.js';
 import { OPTIONS, hex } from '../common.mjs';
@@ -30,7 +30,7 @@ export async function runPeerReservationContract({ api, circuitBytes, verificati
   await rejectsWitness('peer proof rejects a different registered owner secret', input => { input.owner_secret[0] ^= 1; });
   for (const [name, label] of [['owner','owner'], ['peer','peer'], ['nonce','introduction nonce'], ['group','MLS group'],
     ['contact_policy_digest','contact policy'], ['history_digest','history context'], ['account_policy_digest','account policy'],
-    ['challenge','peer challenge']]) {
+    ['challenge','peer challenge'], ['owner_authority','original accounting device authority']]) {
     await rejectsWitness('peer proof rejects changed ' + label + ' with the original opening/binding', input => { input[name][0] ^= 1; });
   }
   await rejectsWitness('peer proof rejects the opposite role', input => { input.role ^= 1; });
@@ -65,7 +65,7 @@ export async function runPeerReservationContract({ api, circuitBytes, verificati
     let failed = false; try { await verifier.verify(changed, expected); } catch { failed = true; }
     check(failed, label);
   };
-  for (const name of ['challenge','historyDigest','owner','peer','nonce','group','contactPolicyDigest','accountPolicyDigest']) {
+  for (const name of ['challenge','historyDigest','owner','peer','nonce','group','contactPolicyDigest','ownerAuthority','accountPolicyDigest']) {
     await rejectsHost('host rejects substituted ' + name, changed => { changed.statement[name][0] ^= 1; });
   }
   await rejectsHost('host rejects a changed signed acceptance', changed => { changed.accountAcceptance.requestDigest[0] ^= 1; });

@@ -1,7 +1,7 @@
-//! Browser-only adapters for the portable bearer permit client. These never
+//! Browser-only adapters for public meeting-board verification and bearer permits. These never
 //! fetch, choose an issuer, sign private RSA operations or expose private claims.
 //! JavaScript owns trusted configuration, encrypted storage and Tor transport.
-use crate::{admission::{decode, MAX_INTEGER}, permits::{Permit, PermitEpoch, PreparedPermit, RecipientClaim, RedemptionStamp}, Error};
+use crate::{admission::{decode, AdmissionGrant, AdmissionTrust, DeviceAuthorization, MAX_INTEGER}, board::{BoardLimits, MeetingBoard, PresenceUpdate}, permits::{Permit, PermitEpoch, PreparedPermit, RecipientClaim, RedemptionStamp}, Error};
 use chacha20poly1305::{aead::{Aead, KeyInit, Payload}, XChaCha20Poly1305, XNonce};
 use serde::{de::DeserializeOwned, Deserialize};
 use wasm_bindgen::prelude::*;
@@ -22,6 +22,69 @@ fn now() -> Result<u64, JsValue> {
 fn parse<T: DeserializeOwned>(json: &str) -> Result<T, JsValue> {
     if json.len() > MAX_JSON { return Err(js_error(Error::InvalidInput)); }
     serde_json::from_str(json).map_err(|_| js_error(Error::InvalidInput))
+}
+
+/// Configuration belongs to the caller's independently trusted catalogue, not
+/// to the untrusted roster response. Keys use canonical base64url encoding.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BoardTrustInput {
+    community_id: String,
+    policy_digest: String,
+    issuer_public_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BoardLimitsInput {
+    max_members: usize,
+    max_devices_per_member: usize,
+    max_lease_seconds: u64,
+    max_replay_entries: usize,
+}
+
+/// Verifies public rows against pinned trust and groups certified devices under
+/// their permanent member identity. No network access or recipient lookup occurs.
+/// Replay and clock floors last for this instance only. A valid partial snapshot
+/// does not prove completeness, current availability, or absence of revocation.
+#[wasm_bindgen]
+pub struct BrowserMeetingBoard { board: MeetingBoard }
+
+#[wasm_bindgen]
+impl BrowserMeetingBoard {
+    #[wasm_bindgen(constructor)]
+    pub fn new(pinned_trust_json: &str, limits_json: &str) -> Result<BrowserMeetingBoard, JsValue> {
+        let trust: BoardTrustInput = parse(pinned_trust_json)?;
+        let limits: BoardLimitsInput = parse(limits_json)?;
+        let issuer_public_key = decode::<32>(&trust.issuer_public_key).map_err(js_error)?;
+        if ed25519_dalek::VerifyingKey::from_bytes(&issuer_public_key)
+            .map_err(|_| js_error(Error::Admission))?.is_weak()
+        { return Err(js_error(Error::Admission)); }
+        let mut board = MeetingBoard::new(
+            AdmissionTrust { community_id: trust.community_id, policy_digest: trust.policy_digest, issuer_public_key },
+            BoardLimits { max_members: limits.max_members, max_devices_per_member: limits.max_devices_per_member,
+                max_lease_seconds: limits.max_lease_seconds, max_replay_entries: limits.max_replay_entries },
+        ).map_err(js_error)?;
+        // Establish the clock floor when the trusted verifier is constructed.
+        board.snapshot(now()?).map_err(js_error)?;
+        Ok(Self { board })
+    }
+
+    /// All three signed objects are untrusted and bounded independently before
+    /// deserialization. The core checks root ownership, lease and sequence rules.
+    pub fn apply(&mut self, admission_json: &str, authorization_json: &str, presence_json: &str) -> Result<(), JsValue> {
+        let admission: AdmissionGrant = parse(admission_json)?;
+        let authorization: DeviceAuthorization = parse(authorization_json)?;
+        let presence: PresenceUpdate = parse(presence_json)?;
+        self.board.apply(&admission, &authorization, &presence, now()?).map_err(js_error)
+    }
+
+    /// Returns only currently unexpired public rows, retaining the independently
+    /// verifiable originals. This does not attest that the operator showed all rows.
+    pub fn snapshot(&mut self) -> Result<String, JsValue> {
+        serde_json::to_string(&self.board.snapshot(now()?).map_err(js_error)?)
+            .map_err(|_| js_error(Error::InvalidInput))
+    }
 }
 
 fn epoch(json: &str, expected_context: &str) -> Result<PermitEpoch, JsValue> {

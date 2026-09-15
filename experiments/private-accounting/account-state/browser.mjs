@@ -3,7 +3,7 @@ import { UltraHonkBackend, UltraHonkVerifierBackend } from '@aztec/bb.js';
 import { OPTIONS, hex, unhex, random, sha, canonicalSignature, be } from '../common.mjs';
 import { fieldBytes, FR_MODULUS } from '../hashes.mjs';
 import { ACCOUNT_MODE, accountHashes, checkpointFromVerified, noirInput, receiptBytes, receiptDigest, ackBytes } from './hashes.mjs';
-import { AccountWitness, statementBytes } from './witness.mjs';
+import { AccountWitness, statementBytes, publicInputValues, PUBLIC_INPUT_COUNT, validityHorizon } from './witness.mjs';
 
 const ECDSA_ORDER = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
 const highS = signature => {
@@ -20,6 +20,7 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   metrics.accountScenario = configuration.accountScenario;
   const hashes = accountHashes(api), policy = manifest.accountPolicy;
   if (!policy) throw new Error('No independently pinned account policy');
+  if (policy.newcomerAdmissions > 16) throw new Error('Synthetic counter contract exceeds bounded execution; this is not a product limit');
   // Fixture scope and times, not product parameters. The native response must
   // agree and is retained separately by the trusted driver for verification.
   const community = await sha(new TextEncoder().encode('synthetic-community'));
@@ -34,7 +35,7 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   assert(response.ok, 'actual cmsg root/device delegations accepted');
   const enrolled = response.value;
   assert(enrolled.community === hex(community) && enrolled.context.communityId === 'synthetic-community', 'actual cmsg fixture community is pinned');
-  assert(enrolled.entries.length === 2 && enrolled.acceptedTimes.join(',') === '100,300', 'independent fixture roster and times');
+  assert(enrolled.entries.length === 2 && enrolled.acceptedTimes.join(',') === '100,300,600', 'independent fixture roster and times');
   for (let i = 0; i < 2; i++) assert(enrolled.entries[i].accountKey === hex(holders[i].raw)
     && enrolled.entries[i].secretHash === hex(holders[i].secretHash), 'actual delegation binds browser key and secret ' + i);
   const verified = await post({ command: 'verify', delegations: enrolled.entries.map(e => e.originalDelegation) });
@@ -46,7 +47,7 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   assert(enrolled.context.contact.initiatorId === enrolled.entries[0].memberId
     && enrolled.context.responderId === enrolled.entries[1].memberId, 'actual original sender and recipient are bound');
   const context = { nonce: Uint8Array.from(enrolled.context.introductionId), group: unhex(enrolled.groupBinding),
-    contactPolicy: unhex(enrolled.contactPolicyDigest) };
+    contactPolicy: unhex(enrolled.contactPolicyDigest), openedAt: 100n };
   const noir = new Noir(circuit);
   const rejected = async (input, label) => {
     let failed = false; try { await noir.execute(noirInput(input)); } catch { failed = true; }
@@ -70,9 +71,12 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
     const provingMs = performance.now() - started, verifyingAt = performance.now();
     assert(await verifier.verifyProof({ ...proof, verificationKey }, OPTIONS), label);
     const verificationMs = performance.now() - verifyingAt;
+    const expected = publicInputValues(candidate.statement);
+    assert(proof.publicInputs.length === PUBLIC_INPUT_COUNT && expected.length === PUBLIC_INPUT_COUNT
+      && proof.publicInputs.every((value, index) => BigInt(value) === expected[index]), 'exact v2 public encoding without private action/role/outcome');
     const original = enrolled.entries[ownerIndex].originalDelegation;
     const requestId = random(), issuedAt = candidate.statement.now;
-    const expiresAt = Math.min(issuedAt + 100, original.admission.expiresAt, original.authorization.expiresAt);
+    const expiresAt = Math.min(issuedAt + 100, candidate.statement.validUntil, original.admission.expiresAt, original.authorization.expiresAt);
     const authorized = await post({ command: 'authorize', owner: ownerIndex, requestId: hex(requestId),
       circuitDigest: manifest.circuitSha256, verifyingKeyDigest: manifest.vkSha256,
       statementDigest: hex(await sha(statementBytes(candidate.statement))), proofDigest: hex(await sha(proof.proof)),
@@ -104,6 +108,11 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
     input.next_state = fieldBytes(await genesis[0].next.commit(opening, 0n));
   });
   await mutate(genesis[0], 'genesis rejects an existing-state shape', input => { input.previous_state = fieldBytes(genesis[0].next.commitment); });
+  await mutate(genesis[0], 'proof cannot choose a contact-specific validity horizon', input => { input.valid_until += 1n; });
+  await mutate(genesis[0], 'genesis cannot backdate maturity or the first refill before its accepted horizon', async input => {
+    const opening = structuredClone(genesis[0].next.opening); opening.createdAt = 100n; opening.frontier = 100n;
+    input.next_state = fieldBytes(await genesis[0].next.commit(opening, 0n));
+  });
   let sender = await prove(genesis[0], 0, 'proved sender lifetime genesis');
   let recipient = await prove(genesis[1], 1, 'proved recipient lifetime genesis');
   const outgoing = await sender.reserve({ peerIndex: 1, role: 0, ...context, now: 100 });
@@ -131,10 +140,13 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   await mutate(activeSender, 'activation cannot replace an obligation peer', input => { input.slot.peer = input.owner; });
   await mutate(activeSender, 'activation cannot change its original group', input => { input.slot.group[0] ^= 1; });
   await mutate(activeSender, 'payload update cannot alter linked pointers', input => { input.own_map.leaf[3] = 1n; });
-  await mutate(activeSender, 'sender cancellation has no refund action', input => { input.action = 4; });
+  await mutate(activeSender, 'unknown action cannot refund a sender reservation', input => { input.action = 7; });
   sender = await prove(activeSender, 0, 'proved sender activation');
   const activeRecipient = await recipient.activate(incoming.event, 100);
   recipient = await prove(activeRecipient, 1, 'proved recipient activation preserves other role');
+  if (configuration.accountScenario === 'close') {
+    recipient = await prove(await recipient.activate(secondary.event, 100), 1, 'proved independent outgoing slot activation for later abandonment');
+  }
   const secondaryRoot = recipient.outgoing.root;
   stage('actual-cmsg-' + configuration.accountScenario);
   // Produce the actual decision while both owners can authorize their named
@@ -214,6 +226,7 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
     assert((await post({ command: 'verifyHistoricalAcknowledgment', acknowledgment: completeAck, now: 300 })).ok, 'native historical acknowledgment retains exact expired sender authority');
     assert(!(await post({ command: 'verifyAcknowledgment', acknowledgment: completeAck, now: 300 })).ok, 'current verifier does not silently authorize expired sender');
   }
+  const pendingRecipient = recipient;
   const settledRecipient = await recipient.settle(incoming.event, resolution, acknowledgment, 300);
   assert(settledRecipient.next.opening.available === recipient.opening.available + BigInt(policy.incomingReservation)
     && settledRecipient.next.opening.reserved === recipient.opening.reserved - BigInt(policy.incomingReservation),
@@ -238,6 +251,9 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   await mutate(settledRecipient, 'settlement cannot reset its event marker', input => { input.settlement_marker[0] ^= 1; });
   await mutate(settledRecipient, 're-signed or reopened group cannot reuse old obligation', input => { input.slot.group[0] ^= 1; });
   if (acknowledgment) {
+    await mutate(settledRecipient, 'authentic historical Answer cannot refund at the common deadline', input => {
+      input.now = 600n; input.valid_until = validityHorizon(600, policy);
+    });
     await mutate(settledRecipient, 'incoming answer cannot omit sender acknowledgment', input => { input.acknowledgment.signature.fill(0); });
     await mutate(settledRecipient, 'incoming answer rejects high-S sender acknowledgment', input => { input.acknowledgment.signature = highS(input.acknowledgment.signature); });
     await mutate(settledRecipient, 'historical acknowledgment cannot replace the original delegated key', input => { input.peer_enrollment.key = holders[1].raw; });
@@ -251,7 +267,20 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
       return ackBytes(community, checkpoint.entries[0].member, checkpoint.entries[1].member, wrongSlot,
         await receiptDigest(message, resolution.signature), checkpoint.entries[0].delegationDigest, acknowledgment.issuedAt);
     }
+  } else {
+    const lateClose = structuredClone(settledRecipient.input);
+    lateClose.now = 600n; lateClose.valid_until = validityHorizon(600, policy);
+    await noir.execute(noirInput(lateClose));
+    assert(true, 'ACVM accepts authentic recipient Close after the common deadline');
   }
+  await mutate(settledRecipient, 'coherent expiry cannot silently retire an unresolved incoming obligation', async input => {
+    input.action = 5; input.now = 600n; input.valid_until = validityHorizon(600, policy);
+    const changed = await pendingRecipient.incoming.update(incoming.event, await hashes.obligation(incoming.event,
+      pendingRecipient.slots.get(incoming.event.toString()), 5));
+    const opening = structuredClone(settledRecipient.next.opening);
+    opening.available = pendingRecipient.opening.available; opening.incomingRoot = changed.next.root;
+    input.next_state = fieldBytes(await settledRecipient.next.commit(opening, settledRecipient.next.version));
+  });
   recipient = await prove(settledRecipient, 1, 'proved incoming actual-' + configuration.accountScenario + ' settlement after peer expiry');
   assert(recipient.outgoing.root === secondaryRoot && recipient.opening.reserved === BigInt(policy.outgoingReservation), 'unrelated outgoing obligation survives recipient settlement');
   let duplicateRejected = false;
@@ -260,6 +289,86 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   await mutate(settledRecipient, 'settled tombstone cannot be credited again', input => {
     input.previous_state = fieldBytes(recipient.commitment); input.previous_version = recipient.version;
     input.next_version = recipient.version + 1n;
+  });
+  // Additional real transitions cover all six private actions across the two
+  // scenarios. Counter/refill attacks below execute ACVM only, without proofs.
+  const execute = async (candidate, label) => { await noir.execute(noirInput(candidate.input)); assert(true, label); return candidate.next; };
+  if (configuration.accountScenario === 'answer') {
+    const canceled = await recipient.cancel(secondary.event, 300);
+    assert(canceled.next.opening.admissions === recipient.opening.admissions
+      && canceled.next.opening.admissionEpoch === recipient.opening.admissionEpoch, 'Prepared cancellation never restores admission throughput');
+    await mutate(canceled, 'Prepared cancellation cannot reset the shared admission counter', async input => {
+      const opening = structuredClone(canceled.next.opening); opening.admissions = 0n;
+      input.next_state = fieldBytes(await canceled.next.commit(opening, canceled.next.version));
+    });
+    await mutate(canceled, 'only Prepared phase can receive a cancellation refund', input => { input.slot.phase = 2; });
+    recipient = await prove(canceled, 1, 'proved Prepared cancellation refunds only reserved capacity');
+    const mature = await recipient.refill(600);
+    assert(mature.next.opening.available === recipient.opening.available + BigInt(policy.refillUnits), 'maturity creates headroom without automatically filling it');
+    await execute(mature, 'ACVM accepts one due mature refill from the actual proved canceled state');
+    await mutate(mature, 'maturity cannot reset the permanent genesis age', async input => {
+      const opening = structuredClone(mature.next.opening); opening.createdAt = 600n;
+      input.next_state = fieldBytes(await mature.next.commit(opening, mature.next.version));
+    });
+    await mutate(mature, 'maturity cannot mint the whole larger capacity', async input => {
+      const opening = structuredClone(mature.next.opening); opening.available = BigInt(policy.maximumAvailable);
+      input.next_state = fieldBytes(await mature.next.commit(opening, mature.next.version));
+    });
+  } else {
+    assert((await post({ command: 'advance', now: 600 })).ok, 'native fixture advances to the pinned abandonment/refill time');
+    const expired = await recipient.expire(secondary.event, 600);
+    assert(expired.next.opening.available === recipient.opening.available
+      && expired.next.opening.reserved === recipient.opening.reserved - BigInt(policy.outgoingReservation), 'outgoing abandonment spends the exact reservation');
+    await mutate(expired, 'outgoing expiry cannot run before the common deadline', input => { input.now = 599n; input.valid_until = validityHorizon(599, policy); });
+    await mutate(expired, 'outgoing expiry cannot refund available capacity', async input => {
+      const opening = structuredClone(expired.next.opening); opening.available += BigInt(policy.outgoingReservation);
+      input.next_state = fieldBytes(await expired.next.commit(opening, expired.next.version));
+    });
+    await mutate(expired, 'expiry cannot reset admission throughput', async input => {
+      const opening = structuredClone(expired.next.opening); opening.admissions = 0n;
+      input.next_state = fieldBytes(await expired.next.commit(opening, expired.next.version));
+    });
+    recipient = await prove(expired, 1, 'proved expired outgoing obligation remains spent without a peer signature');
+    const refill = await recipient.refill(600);
+    assert(refill.next.opening.available === recipient.opening.available + BigInt(policy.refillUnits)
+      && refill.next.opening.frontier === validityHorizon(600, policy), 'due refill grants once and advances to the common committed horizon');
+    await mutate(refill, 'offline time cannot multiply the single refill grant', async input => {
+      const opening = structuredClone(refill.next.opening); opening.available += BigInt(policy.refillUnits);
+      input.next_state = fieldBytes(await refill.next.commit(opening, refill.next.version));
+    });
+    await mutate(refill, 'refill cannot retain an old frontier for replay', async input => {
+      const opening = structuredClone(refill.next.opening); opening.frontier = recipient.opening.frontier;
+      input.next_state = fieldBytes(await refill.next.commit(opening, refill.next.version));
+    });
+    recipient = await prove(refill, 1, 'proved one bounded refill after permanent outgoing expenditure');
+    await mutate(refill, 'coherent backdated proofs cannot refill twice inside the same acceptance window', async input => {
+      const current = recipient.input(random(), 601);
+      input.now = current.now; input.valid_until = current.valid_until;
+      input.old = current.old; input.new_blind = current.new_blind;
+      input.previous_state = current.previous_state; input.previous_version = current.previous_version; input.next_version = current.next_version;
+      const opening = structuredClone(recipient.opening); opening.available += BigInt(policy.refillUnits); opening.blind = current.new_blind;
+      input.next_state = fieldBytes(await recipient.commit(opening, current.next_version));
+    });
+    let replay = false; try { await recipient.refill(600); } catch { replay = true; }
+    assert(replay, 'same-time refill replay is rejected');
+    let late = false; try { await recipient.settle(secondary.event, resolution, undefined, 600); } catch { late = true; }
+    assert(late, 'terminal expiry cannot later receive an Answer or Close refund');
+  }
+
+  // Coherent private forks are deliberately ACVM-only, not ledger evidence.
+  let churn = await execute(await secondary.next.cancel(secondary.event, 100), 'ACVM cancellation retains a counted admission');
+  for (let count = Number(churn.opening.admissions); count < policy.newcomerAdmissions; count++) {
+    const reservation = await churn.reserve({ peerIndex: 0, role: 0, nonce: random(), group: random(), contactPolicy: context.contactPolicy, now: 100 });
+    churn = await execute(reservation, 'ACVM counts another newcomer reservation in either role');
+    churn = await execute(await churn.cancel(reservation.event, 100), 'ACVM canceled reservation remains counted in the shared window');
+  }
+  const lowered = churn.clone(); lowered.opening.admissions -= 1n;
+  const overRate = await lowered.reserve({ peerIndex: 0, role: 0, nonce: random(), group: random(), contactPolicy: context.contactPolicy, now: 100 });
+  overRate.input.old = churn.input(overRate.input.new_blind, 100).old;
+  await rejected(overRate.input, 'coherent successor cannot bypass newcomer throughput after repeated refunds');
+  await mutate(incoming, 'incoming reservation cannot shift the shared introduction opened-at into the future', input => { input.slot.admitted_at = 101n; });
+  await mutate(activeRecipient, 'a live-at-proving contact cannot outlast the common proof horizon', input => {
+    input.now = 600n; input.valid_until = validityHorizon(600, policy);
   });
   // Real proofs form the only exported account chain; openings, map witnesses,
   // signing secrets and contact receipts stay in this browser test process.

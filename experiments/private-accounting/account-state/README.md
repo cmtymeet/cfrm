@@ -1,7 +1,7 @@
 # Account-state foundation
 
-**Experimental foundation with actual Answer-flow evidence.** This extends the separately
-measured settlement experiments. It does not enable production
+**Version 2 source candidate; validation pending.** Archived version 1 evidence
+below does not validate this policy. This does not enable production
 `AllocationLedger::resolve_private`, choose product credit rules, or establish
 complete private release, recovery or mobile feasibility.
 
@@ -16,29 +16,55 @@ state. Lifetime genesis uniqueness and competing-device acceptance additionally
 require the durable Rust ledger; a valid genesis proof alone proves no uniqueness.
 
 Genesis commits exactly the configured initial available credit, zero reserved
-credit, three empty authenticated maps and a zero refill frontier. Outgoing and
+credit, three empty authenticated maps, permanent creation time and refill
+frontier conservatively anchored at `validUntil`, and zero admissions in the
+current window. Outgoing and
 incoming reservations debit **one available balance**. Each map entry records
 the role, full original peer/nonce/group/contact policy, amount, admission time,
-historical peer authority and Prepared/Active/Settled phase. Settlement retains
+historical peer authority and Prepared/Active/Settled/Canceled/Expired phase. Every terminal transition retains
 the entry as a tombstone. New reservations prove event absence in both role
 maps, preventing role changes from resetting an event. A third map retains
 lifetime pair membership; repeated pairs receive no invented extra reward.
 
-Reservation moves configured units from available to reserved. Activation
-changes only Prepared to Active. Settlement returns exactly the reserved units;
-all untouched roots, pointers, counts and fields remain fixed. No sender-cancel
-or timeout-refund operation exists. Available is `u32`, aggregate reserved is
-`u128`; their sum is conserved and is **not** capped by maximum available.
-There is no refill transition yet. Future periodic allowance must define what
-happens if later settlement would exceed the available cap; this relation does
-not silently clamp or destroy units.
+Reservation moves configured units from available to reserved and consumes one
+shared admission in the fixed time window. Refunds never restore that count.
+Activation changes only Prepared to Active. Answer restores both reservations;
+recipient Close restores its own reservation while leaving the sender's cost
+spent. Prepared cancellation refunds capacity and retains a counted admission
+and permanent tombstone. Active outgoing expiry spends the reservation without
+resolving the recipient's inbox or refunding the sender.
+
+Total `available + reserved` cannot exceed `initialCredit` while young or
+`maximumAvailable` after `newcomerPeriod` since permanent genesis. Maturity
+creates headroom, not credit. A due refill grants exactly
+`min(refillUnits, capacity - available - reserved)` once and sets its committed
+frontier to `validUntil`, including zero grants. Due time is measured from that
+frontier; backdated proofs cannot collect repeated grants in one window. Offline
+time never multiplies the grant. Conservation permits
+only that issuance and exact outgoing Close/expiry burns. Other paths, genesis
+age and admission counters remain fixed.
+
+The immutable slot `admittedAt` means the common introduction **opened-at**,
+not the receiver's reserve time. Incoming reserve requires it explicitly.
+Reserve/activate/Answer must fit inside the shared lease. Close can clear an
+incoming obligation after the deadline; late Answer cannot revive a tombstone.
 
 The public policy supplies initial credit, maximum available, per-role amounts,
-revision and validity interval. Its SHA256 transcript is the 23-byte ASCII
-`cfrm.account-policy.v1\0`, community digest32, four big-endian u32 amounts in
-that order, revision/from/until as three big-endian u64s, then byte32 (map depth).
+revision and validity interval, plus `newcomerPeriod:u64`, `rateWindow:u64`,
+`newcomerAdmissions:u32`, `maximumAdmissions:u32`, `refillPeriod:u64`,
+`refillUnits:u32`, `abandonAfter:u64`. Its 140-byte SHA256 transcript is ASCII
+`cfrm.account-policy.v2\0`, community digest32, the original four u32 amounts and
+three u64 values, those seven new fields in listed order, then byte32. Integers
+are big-endian; every field is required.
 `ACCOUNT_POLICY_JSON` is required at build time; the manifest pins its exact
 contents. Synthetic CI values are test configuration, not product defaults.
+
+Protocol2 statement signing uses `cfrm.account.statement.v2\0`. Public
+`validUntil`, immediately after `now`, is the common
+`min(next rate-window boundary, policyValidUntil)`. The ledger requires request
+expiry within it and rechecks after proof verification. Reserve/activate/Answer
+fit the entire proof interval within the lease; reproving near a boundary may
+be necessary. No contact deadline, private action or role enters the named wire.
 
 ## Maps and retained authority
 
@@ -88,7 +114,7 @@ block/consent enforcement remain necessary for protected release.
 
 ## Browser and host boundary
 
-Select `ACCOUNTING_MODE=account-state-v1` and
+Select `ACCOUNTING_MODE=account-state-v2` and
 `HASH_SCHEME=poseidon2-bn254-fixed-128-v1`. Separate `ACCOUNT_SCENARIO=answer`
 and `close` runs use fresh actual cmsg fixtures and the same compiled circuit/VK.
 Setup hashes live in `account-state/setup-lock.json`; only explicit initial
@@ -108,9 +134,9 @@ backend accepts the setup; run9/45's rejected partial-chunk lock is not a pin.
 The browser proves both genesis states, both initial reservations and activations,
 and an additional outgoing obligation for the recipient. Answer then proves
 outgoing settlement and incoming settlement with the archived sender acknowledgment.
-Close proves incoming settlement after the silent sender expires. The additional
-outgoing obligation stays outstanding. The 100/300 times and early sender expiry
-are synthetic fixture controls.
+Close proves sender expenditure and incoming settlement after sender expiry.
+Answer adds Prepared cancellation. Close adds activation of the other outgoing
+slot, its expiry and one refill. Times 100/300/600 are synthetic fixture controls.
 
 After each proof, while the actual device is still authorized, cmsg signs its
 exact named request hashes and two independent random retry IDs. Reports contain
@@ -119,7 +145,7 @@ paths remain in the browser. Batched synthetic reporting is not an operator
 request format or evidence of traffic unlinkability.
 
 `verify-request.mjs` takes trusted manifest and native-verified enrollment paths,
-then only `{statement, proof, proofScope}` on stdin. It reconstructs all235 public
+then only `{statement, proof, proofScope}` on stdin. It reconstructs all243 public
 inputs, independently derives the checkpoint and pins policy/time/circuit/VK
 before actual Barretenberg verification. Rust's durable ledger independently
 checks the real device authorization, lifetime genesis, exact retry and CAS.
@@ -127,7 +153,11 @@ The common checkpoint and accepted test times come from retained native data,
 not browser claims. Both proof verifiers use Barretenberg; this is not independent
 implementation diversity.
 
-## Executed evidence
+## Executed version 1 evidence
+
+These runs predate the current lifecycle/rate/refill policy. No v2 proof result
+is claimed yet. There is no v1 state import or migration; changing scope must
+not permit a second lifetime genesis.
 
 Crow 9/46 at `79708b7251e6a983b3478bd9530068778940a436` passed nine actual
 Answer-flow browser proofs, 85 browser checks and 19 independently pinned Node
@@ -157,7 +187,7 @@ sampling can miss peaks and shared-host load affects timing. The cost prevents
 claiming readiness for the intended browser experience. Mobile viability and
 exact peak Wasm memory remain unverified.
 
-Full refill/reward/disapproval, private matching Active proofs, recovery/opening
+Rewards/disapproval, private matching Active proof integration, recovery/opening
 synchronization, authenticated policy/key migration, block/expiry/consent proofs,
 operator consistency and target-browser measurements remain outside this
 foundation. This evidence is neither a complete release nor a cryptographic audit.

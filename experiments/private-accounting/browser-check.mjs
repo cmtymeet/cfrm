@@ -13,8 +13,8 @@ const evidencePath = process.env.BROWSER_EVIDENCE;
 const hashScheme = checkScheme(process.env.HASH_SCHEME ?? SHA_SCHEME);
 const accountingMode = process.env.ACCOUNTING_MODE ?? 'settlement-v1';
 const accountScenario = process.env.ACCOUNT_SCENARIO;
-if (!['settlement-v1','account-state-v1'].includes(accountingMode)
-    || (accountingMode === 'account-state-v1' && !['answer','close'].includes(accountScenario))) throw new Error('Explicit accounting mode/scenario required');
+if (!['settlement-v1','account-state-v2'].includes(accountingMode)
+    || (accountingMode === 'account-state-v2' && !['answer','close'].includes(accountScenario))) throw new Error('Explicit accounting mode/scenario required');
 const localManifest = JSON.parse(await readFile('public/manifest.json', 'utf8'));
 if (localManifest.hashScheme !== hashScheme) throw new Error('Harness hash scheme differs from built circuit');
 if ((localManifest.accountingMode ?? 'settlement-v1') !== accountingMode) throw new Error('Harness accounting mode differs from build');
@@ -207,18 +207,18 @@ function sampleBrowserMemory(child) {
 function failFixture(error) { fixtureWaiting?.reject(error); fixtureWaiting = undefined; clearTimeout(fixtureTimer); }
 function publicCommand(value) {
   const exact = (v, keys) => v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).sort().join(',') === [...keys].sort().join(',');
-  if (accountingMode === 'account-state-v1') {
+  if (accountingMode === 'account-state-v2') {
     const key = k => exact(k, ['accountKey','secretHash']) && /^[0-9a-f]{128}$/.test(k.accountKey) && /^[0-9a-f]{64}$/.test(k.secretHash);
     if (value?.command === 'enroll') return exact(value, ['command','keys','peerExpires']) && value.keys?.length === 2 && value.keys.every(key) && value.peerExpires === 200;
     if (value?.command === 'verify') return exact(value, ['command','delegations']) && value.delegations?.length === 2;
     if (value?.command === 'answer') return exact(value, ['command']) && accountScenario === 'answer';
-    if (value?.command === 'close') return exact(value, ['command','now']) && accountScenario === 'close' && value.now === 300;
-    if (value?.command === 'advance') return exact(value, ['command','now']) && accountScenario === 'answer' && value.now === 300;
+    if (value?.command === 'close') return exact(value, ['command','now']) && accountScenario === 'close' && value.now === 100;
+    if (value?.command === 'advance') return exact(value, ['command','now']) && [300,600].includes(value.now);
     if (value?.command === 'ack') return exact(value, ['command','answer']) && accountScenario === 'answer';
     if (['verifyReceipt','verifyHistoricalReceipt'].includes(value?.command)) return exact(value, ['command','receipt','now']) && [100,300].includes(value.now);
     if (['verifyAcknowledgment','verifyHistoricalAcknowledgment'].includes(value?.command)) return exact(value, ['command','acknowledgment','now']) && [100,300].includes(value.now);
     if (value?.command === 'authorize') return exact(value, ['command','owner','requestId','circuitDigest','verifyingKeyDigest','statementDigest','proofDigest','issuedAt','expiresAt'])
-      && [0,1].includes(value.owner) && [100,300].includes(value.issuedAt) && Number.isSafeInteger(value.expiresAt)
+      && [0,1].includes(value.owner) && [100,300,600].includes(value.issuedAt) && Number.isSafeInteger(value.expiresAt)
       && value.expiresAt > value.issuedAt && value.expiresAt <= 10000
       && ['requestId','circuitDigest','verifyingKeyDigest','statementDigest','proofDigest'].every(k => /^[0-9a-f]{64}$/.test(value[k]));
     return false;
@@ -232,7 +232,7 @@ function publicCommand(value) {
     && exact(e.authorization, ['version', 'communityId', 'memberId', 'rootPublicKey', 'devicePublicKey', 'issuedAt', 'expiresAt', 'signature']));
 }
 async function callFixture(value) {
-  if (!publicCommand(value) || fixtureWaiting || ++evidence.fixtureRequests > (accountingMode === 'account-state-v1' ? 48 : 16)) throw new Error('Public fixture request bound');
+  if (!publicCommand(value) || fixtureWaiting || ++evidence.fixtureRequests > (accountingMode === 'account-state-v2' ? 48 : 16)) throw new Error('Public fixture request bound');
   const result = new Promise((resolve, reject) => { fixtureWaiting = { resolve, reject }; });
   fixtureTimer = setTimeout(() => failFixture(new Error('Enrollment fixture deadline')), 15_000);
   fixture.stdin.write(JSON.stringify(value) + '\n');
@@ -250,7 +250,7 @@ const server = createServer(async (request, response) => {
     response.setHeader('Cache-Control', 'no-store');
     response.setHeader('Content-Security-Policy', "default-src 'none'; connect-src 'self'; worker-src 'self' blob:; script-src 'self' 'wasm-unsafe-eval'; object-src 'none'");
     const pathname = new URL(request.url, 'http://localhost').pathname;
-    if (pathname === '/test-config.json' && accountingMode === 'account-state-v1') {
+    if (pathname === '/test-config.json' && accountingMode === 'account-state-v2') {
       if (request.method !== 'GET') { response.writeHead(405).end(); return; }
       response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ accountScenario })); return;
     }
@@ -287,7 +287,7 @@ async function stop(child) {
 }
 try {
   server.listen(0, '127.0.0.1'); await once(server, 'listening'); origin = `http://127.0.0.1:${server.address().port}`;
-  fixture = captureClose(spawn(fixtureBinary, accountingMode === 'account-state-v1' ? ['--serve'] : [], { stdio: ['pipe', 'pipe', 'pipe'] }));
+  fixture = captureClose(spawn(fixtureBinary, accountingMode === 'account-state-v2' ? ['--serve'] : [], { stdio: ['pipe', 'pipe', 'pipe'] }));
   fixture.on('error', error => failFixture(error)); fixture.stdin.on('error', error => failFixture(error));
   fixture.stderr.on('data', chunk => { fixtureStderr = (fixtureStderr + chunk).slice(-4096); });
   fixture.stdout.on('data', chunk => {
@@ -296,7 +296,7 @@ try {
     const newline = fixtureOutput.indexOf('\n'); if (newline < 0) return;
     try {
       let reply = JSON.parse(fixtureOutput.slice(0, newline)); fixtureOutput = fixtureOutput.slice(newline + 1);
-      if (accountingMode === 'account-state-v1') {
+      if (accountingMode === 'account-state-v2') {
         if (!reply || Object.keys(reply).length !== 1) throw new Error('Unexpected cmsg fixture response');
         if (reply.ok && typeof reply.ok === 'object') reply = { ok: true, value: reply.ok };
         else if (typeof reply.error === 'string') reply = { ok: false, error: reply.error };
@@ -351,7 +351,7 @@ try {
   clearTimeout(deadline);
   if (result.exceptionDetails || !result.result?.value) throw new Error('No browser result');
   evidence.contract = result.result.value;
-  const expectedProofs = accountingMode === 'account-state-v1' ? (accountScenario === 'answer' ? 9 : 8) : 2;
+  const expectedProofs = accountingMode === 'account-state-v2' ? (accountScenario === 'answer' ? 10 : 12) : 2;
   if (!evidence.contract.ok || evidence.contract.proofs?.length !== expectedProofs || evidence.contract.checks.length < 30) throw new Error('Browser proof contract incomplete');
   if (evidence.forbiddenRequests.length) throw new Error('Unlisted browser network traffic');
   await browserMemory.stop();
@@ -359,7 +359,7 @@ try {
   // A separate runtime verifies local pinned VK + public inputs, never witnesses.
   const { verifyResults } = await import('./verify.mjs');
   evidence.independent = await verifyResults(evidence.contract, enrolled);
-  if (accountingMode === 'account-state-v1') {
+  if (accountingMode === 'account-state-v2') {
     const { runRustAccountLedgerContract } = await import('./account-state/ledger-contract.mjs');
     evidence.ledger = await runRustAccountLedgerContract(evidence.contract, enrolled);
   }

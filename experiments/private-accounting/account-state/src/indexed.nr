@@ -3,8 +3,8 @@
 // Depth is implementation capacity; it does not select a contact allowance.
 use p2hash::poseidon2::Poseidon2;
 
-// ASCII cfrm.account-state.v1, independent of enrollment/secret/marker domains.
-global DOMAIN: Field = 0x6366726d2e6163636f756e742d73746174652e7631;
+// ASCII cfrm.account-state.v2, independent of enrollment/secret/marker domains.
+global DOMAIN: Field = 0x6366726d2e6163636f756e742d73746174652e7632;
 global LIMIT: u64 = 4294967296;
 
 pub fn hash<let N: u32>(values: [Field; N]) -> Field {

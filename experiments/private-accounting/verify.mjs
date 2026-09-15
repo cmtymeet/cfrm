@@ -8,7 +8,7 @@ import { runLedgerContract } from './ledger-contract.mjs';
 
 export async function verifyResults(result, enrolled) {
   const manifest = JSON.parse(await readFile('public/manifest.json', 'utf8'));
-  if (manifest.accountingMode === 'account-state-v1') {
+  if (manifest.accountingMode === 'account-state-v2') {
     const { verifyAccountResults } = await import('./account-state/verify.mjs');
     return verifyAccountResults(result, enrolled);
   }

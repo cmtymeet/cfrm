@@ -5,13 +5,12 @@ import { dirname, resolve } from 'node:path';
 import { Barretenberg, BackendType, UltraHonkVerifierBackend } from '@aztec/bb.js';
 import { OPTIONS, hex, unhex, sha } from '../common.mjs';
 import { fieldValue } from '../hashes.mjs';
-import { ACCOUNT_MODE, accountHashes, checkpointFromVerified, policyDigest } from './hashes.mjs';
-import { publicInputValues } from './witness.mjs';
+import { ACCOUNT_MODE, accountHashes, checkpointFromVerified, policyDigest, POLICY_KEYS } from './hashes.mjs';
+import { publicInputValues, PUBLIC_INPUT_COUNT, validityHorizon } from './witness.mjs';
 
-const statementKeys = ['protocolVersion','community','owner','policyDigest','enrollmentRoot','now','genesis',
+const statementKeys = ['protocolVersion','community','owner','policyDigest','enrollmentRoot','now','validUntil','genesis',
   'previousVersion','nextVersion','previousState','nextState','settlementMarker','policy'];
-const policyKeys = ['initialCredit','maximumAvailable','outgoingReservation','incomingReservation',
-  'policyRevision','policyValidFrom','policyValidUntil'];
+const policyKeys = POLICY_KEYS;
 const exact = (value, keys) => value && !Array.isArray(value) && Object.keys(value).length === keys.length
   && keys.every(key => Object.hasOwn(value, key));
 const equal = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
@@ -54,7 +53,8 @@ export async function createAccountVerifier(manifestPath, trusted) {
         const s = record.statement;
         if (!exact(s, statementKeys) || !exact(s.policy, policyKeys)) throw new Error('Statement field set');
         const values = publicInputValues(s);
-        if (values.length !== 235 || !equal(s.community, Array.from(community))
+        if (values.length !== PUBLIC_INPUT_COUNT || BigInt(s.validUntil) !== validityHorizon(s.now, manifest.accountPolicy)
+            || !equal(s.community, Array.from(community))
             || !owners.has(hex(Uint8Array.from(s.owner))) || !allowedTimes.has(s.now)
             || !policyKeys.every(k => s.policy[k] === manifest.accountPolicy[k])
             || !equal(s.policyDigest, Array.from(expectedPolicy))
@@ -99,6 +99,8 @@ export async function verifyAccountResults(result, trusted) {
     }
     const invalidTime = structuredClone(positive); invalidTime.statement.now += 1;
     await rejects(invalidTime, 'independent rejects unapproved time');
+    const invalidHorizon = structuredClone(positive); invalidHorizon.statement.validUntil += 1;
+    await rejects(invalidHorizon, 'independent rejects a private or stale proof validity horizon');
     const invalidPolicy = structuredClone(positive); invalidPolicy.statement.policy.initialCredit += 1;
     await rejects(invalidPolicy, 'independent rejects unpinned policy');
     for (const name of ['circuitDigest','verifyingKeyDigest']) {

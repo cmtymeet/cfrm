@@ -1,10 +1,10 @@
-// Account-state foundation. No refill, answer reward, cancellation refund,
-// peer release proof or production enablement is implied by this relation.
+// Versioned private lifecycle. No Answer reward, private protected-release
+// integration, v1 migration or production enablement is implied.
 mod indexed;
 use sha2lib::digest;
 use p2hash::poseidon2::Poseidon2;
 
-global DOMAIN: Field = 0x6366726d2e6163636f756e742d73746174652e7631;
+global DOMAIN: Field = 0x6366726d2e6163636f756e742d73746174652e7632;
 // Preserve the measured P2 secret and owner/event marker namespaces.
 global LEGACY_DOMAIN: Field = 0x6366726d2e6163636f756e74696e672e706f736569646f6e322e7631;
 global SAFE: u64 = 9007199254740991;
@@ -19,7 +19,7 @@ struct Opening {
     outgoing_root: Field, outgoing_count: u64,
     incoming_root: Field, incoming_count: u64,
     pair_root: Field, pair_count: u64,
-    frontier: u64, blind: [u8; 32],
+    frontier: u64, created_at: u64, admission_epoch: u64, admissions: u32, blind: [u8; 32],
 }
 
 struct Obligation {
@@ -103,10 +103,12 @@ fn verify_peer_authority(community: [u8; 32], slot: Obligation, peer: Enrollment
 
 fn policy_hash(community: [u8; 32], initial_credit: u32, maximum_available: u32,
     outgoing_reservation: u32, incoming_reservation: u32, revision: u64,
-    valid_from: u64, valid_until: u64) -> [u8; 32] {
-    // ASCII cfrm.account-policy.v1\0, community, four u32s, three u64s, depth32.
-    let prefix: [u8; 23] = [99,102,114,109,46,97,99,99,111,117,110,116,45,112,111,108,105,99,121,46,118,49,0];
-    let mut bytes = [0; 96];
+    valid_from: u64, valid_until: u64, newcomer_period: u64, rate_window: u64,
+    newcomer_admissions: u32, maximum_admissions: u32, refill_period: u64,
+    refill_units: u32, abandon_after: u64) -> [u8; 32] {
+    // Existing fields, then the seven v2 parameters in their fixed wire order.
+    let prefix: [u8; 23] = [99,102,114,109,46,97,99,99,111,117,110,116,45,112,111,108,105,99,121,46,118,50,0];
+    let mut bytes = [0; 140];
     for i in 0..23 { bytes[i] = prefix[i]; }
     for i in 0..32 { bytes[23+i] = community[i]; }
     let amounts = [initial_credit, maximum_available, outgoing_reservation, incoming_reservation];
@@ -114,12 +116,22 @@ fn policy_hash(community: [u8; 32], initial_credit: u32, maximum_available: u32,
         let encoded: [u8; 4] = (amounts[i] as Field).to_be_bytes();
         for j in 0..4 { bytes[55+i*4+j] = encoded[j]; }
     }
-    let times = [revision, valid_from, valid_until];
-    for i in 0..3 {
+    let times = [revision, valid_from, valid_until, newcomer_period, rate_window];
+    for i in 0..5 {
         let encoded: [u8; 8] = (times[i] as Field).to_be_bytes();
         for j in 0..8 { bytes[71+i*8+j] = encoded[j]; }
     }
-    bytes[95] = 32;
+    let caps = [newcomer_admissions, maximum_admissions];
+    for i in 0..2 {
+        let encoded: [u8; 4] = (caps[i] as Field).to_be_bytes();
+        for j in 0..4 { bytes[111+i*4+j] = encoded[j]; }
+    }
+    let refill: [u8; 8] = (refill_period as Field).to_be_bytes();
+    let units: [u8; 4] = (refill_units as Field).to_be_bytes();
+    let abandon: [u8; 8] = (abandon_after as Field).to_be_bytes();
+    for i in 0..8 { bytes[119+i] = refill[i]; bytes[131+i] = abandon[i]; }
+    for i in 0..4 { bytes[127+i] = units[i]; }
+    bytes[139] = 32;
     digest(bytes)
 }
 
@@ -130,7 +142,8 @@ fn state_hash(community: [u8; 32], owner: [u8; 32], policy: [u8; 32],
         state.available as Field, state.reserved as Field,
         state.outgoing_root, state.outgoing_count as Field,
         state.incoming_root, state.incoming_count as Field,
-        state.pair_root, state.pair_count as Field, state.frontier as Field, b[0], b[1]])
+        state.pair_root, state.pair_count as Field, state.frontier as Field,
+        state.created_at as Field, state.admission_epoch as Field, state.admissions as Field, b[0], b[1]])
 }
 
 fn obligation_hash(event: Field, slot: Obligation, phase: u8) -> Field {
@@ -210,12 +223,14 @@ fn verify_resolution(community: [u8; 32], owner: [u8; 32], slot: Obligation,
 
 fn main(
     community: pub [u8; 32], owner: pub [u8; 32], policy_digest: pub [u8; 32],
-    enrollment_root: pub [u8; 32], now: pub u64, genesis: pub bool,
+    enrollment_root: pub [u8; 32], now: pub u64, valid_until: pub u64, genesis: pub bool,
     previous_version: pub u64, next_version: pub u64,
     previous_state: pub [u8; 32], next_state: pub [u8; 32], settlement_marker: pub [u8; 32],
     initial_credit: pub u32, maximum_available: pub u32,
     outgoing_reservation: pub u32, incoming_reservation: pub u32,
     policy_revision: pub u64, policy_valid_from: pub u64, policy_valid_until: pub u64,
+    newcomer_period: pub u64, rate_window: pub u64, newcomer_admissions: pub u32,
+    maximum_admissions: pub u32, refill_period: pub u64, refill_units: pub u32, abandon_after: pub u64,
     owner_secret: [u8; 32], owner_enrollment: Enrollment, peer_enrollment: Enrollment,
     old: Opening, new_blind: [u8; 32], action: u8, slot: Obligation,
     own_map: MapWitness, opposite_map: MapWitness, pair_map: MapWitness,
@@ -227,11 +242,21 @@ fn main(
     assert((policy_valid_from > 0) & (policy_valid_from <= now));
     assert((now < policy_valid_until) & (policy_valid_until <= SAFE));
     assert((maximum_available > 0) & (initial_credit <= maximum_available));
-    assert((outgoing_reservation > 0) & (outgoing_reservation <= maximum_available));
-    assert((incoming_reservation > 0) & (incoming_reservation <= maximum_available));
+    assert((outgoing_reservation > 0) & (outgoing_reservation <= initial_credit));
+    assert((incoming_reservation > 0) & (incoming_reservation <= initial_credit));
+    assert((newcomer_period > 0) & (newcomer_period <= SAFE));
+    assert((rate_window > 0) & (rate_window <= SAFE));
+    assert((refill_period > 0) & (refill_period <= SAFE));
+    assert((abandon_after > 0) & (abandon_after <= SAFE));
+    assert(abandon_after >= rate_window);
+    assert((newcomer_admissions > 0) & (newcomer_admissions <= maximum_admissions));
+    assert((refill_units > 0) & (refill_units <= initial_credit));
+    let window_end = (now / rate_window + 1) * rate_window;
+    assert(valid_until == if window_end < policy_valid_until { window_end } else { policy_valid_until });
     assert(policy_hash(community, initial_credit, maximum_available,
         outgoing_reservation, incoming_reservation, policy_revision,
-        policy_valid_from, policy_valid_until) == policy_digest);
+        policy_valid_from, policy_valid_until, newcomer_period, rate_window,
+        newcomer_admissions, maximum_admissions, refill_period, refill_units, abandon_after) == policy_digest);
     assert((owner_secret != [0; 32]) & (new_blind != [0; 32]));
     let registered_secret = secret_hash(community, owner_secret);
     assert(registered_secret == field(owner_enrollment.secret_hash));
@@ -243,26 +268,34 @@ fn main(
         let empty = indexed::initial_root();
         let initial = Opening { available: initial_credit, reserved: 0,
             outgoing_root: empty, outgoing_count: 1, incoming_root: empty, incoming_count: 1,
-            pair_root: empty, pair_count: 1, frontier: 0, blind: new_blind };
+            pair_root: empty, pair_count: 1, frontier: valid_until, created_at: valid_until,
+            admission_epoch: now / rate_window, admissions: 0, blind: new_blind };
         assert(state_hash(community, owner, policy_digest, registered_secret, 0, initial) == field(next_state));
     } else {
         assert(next_version == previous_version + 1);
         assert(new_blind != old.blind);
         assert(state_hash(community, owner, policy_digest, registered_secret, previous_version, old) == field(previous_state));
-        assert(old.available <= maximum_available);
-        assert(old.frontier == 0); // No periodic issuance transition exists yet.
+        assert((old.created_at > 0) & (old.created_at <= old.frontier) & (old.frontier <= valid_until));
+        let mature = if now >= old.created_at { now - old.created_at >= newcomer_period } else { false };
+        let capacity = if mature { maximum_available } else { initial_credit };
+        let admission_limit = if mature { maximum_admissions } else { newcomer_admissions };
+        let epoch = now / rate_window;
+        assert((old.admission_epoch <= epoch) & (old.admissions <= maximum_admissions));
+        assert(old.available as u128 + old.reserved <= capacity as u128);
         assert((old.outgoing_count >= 1) & (old.outgoing_count <= 4294967296));
         assert((old.incoming_count >= 1) & (old.incoming_count <= 4294967296));
         assert((old.pair_count >= 1) & (old.pair_count <= 4294967296));
-        assert((action >= 1) & (action <= 3)); // reserve, activate, settle
-        assert((slot.role < 2) & (slot.peer != owner));
-        assert((slot.nonce != [0; 32]) & (slot.group != [0; 32]) & (slot.contact_policy != [0; 32]));
-        assert((slot.admitted_at > 0) & (slot.admitted_at <= now));
+        assert((action >= 1) & (action <= 6)); // reserve, activate, settle, cancel, expire, refill
         let amount = if slot.role == 0 { outgoing_reservation } else { incoming_reservation };
-        assert(slot.amount == amount);
+        if action != 6 {
+            assert((slot.role < 2) & (slot.peer != owner));
+            assert((slot.nonce != [0; 32]) & (slot.group != [0; 32]) & (slot.contact_policy != [0; 32]));
+            assert((slot.admitted_at > 0) & (slot.admitted_at <= now));
+            assert(slot.amount == amount);
+        }
         let event = marker(community, owner, owner_secret, slot.peer, slot.nonce);
         let pair = pair_key(community, owner, owner_secret, slot.peer);
-        assert((event != 0) & (pair != 0));
+        if action != 6 { assert((event != 0) & (pair != 0)); }
         let own_root = if slot.role == 0 { old.outgoing_root } else { old.incoming_root };
         let own_count = if slot.role == 0 { old.outgoing_count } else { old.incoming_count };
         let other_root = if slot.role == 0 { old.incoming_root } else { old.outgoing_root };
@@ -273,11 +306,20 @@ fn main(
         let mut pair_count = old.pair_count;
         let mut available = old.available;
         let mut reserved = old.reserved;
+        let mut frontier = old.frontier;
+        let mut admission_epoch = old.admission_epoch;
+        let mut admissions = old.admissions;
+        let mut issued: u32 = 0;
         // Private and derived only from an authenticated settlement below.
         // It is never a prover-selected amount or a public outcome signal.
         let mut burned: u32 = 0;
         if action == 1 {
-            assert((slot.phase == 1) & (slot.admitted_at == now));
+            // Both owners commit the original initiator's common opened-at.
+            assert((slot.phase == 1) & (now - slot.admitted_at < abandon_after));
+            assert(valid_until - slot.admitted_at <= abandon_after);
+            let count = if old.admission_epoch == epoch { old.admissions as u64 + 1 } else { 1 };
+            assert(count <= admission_limit as u64);
+            admission_epoch = epoch; admissions = count as u32;
             verify_enrollment(community, slot.peer, peer_enrollment, field(enrollment_root), now);
             assert(slot.peer_authority == enrollment_leaf(community, slot.peer, peer_enrollment));
             // Same event cannot be inserted under another role or a new path.
@@ -297,15 +339,42 @@ fn main(
             available = old.available - amount;
             reserved = old.reserved + amount as u128;
             assert(settlement_marker == [0; 32]);
+        } else if action == 6 {
+            assert(now >= old.frontier);
+            assert(now - old.frontier >= refill_period);
+            let headroom = capacity as u128 - (old.available as u128 + old.reserved);
+            issued = if headroom < refill_units as u128 { headroom as u32 } else { refill_units };
+            available = old.available + issued;
+            // No backdated proof chain may collect multiple grants inside one
+            // accepted window. Even a zero grant consumes the common horizon.
+            frontier = valid_until;
+            assert(settlement_marker == [0; 32]);
         } else {
-            let next_phase = if action == 2 { 2 } else { 3 };
-            assert(slot.phase == if action == 2 { 1 } else { 2 });
+            let next_phase = if action == 2 { 2 } else if action == 4 { 4 } else if action == 5 { 5 } else { 3 };
+            assert(slot.phase == if (action == 2) | (action == 4) { 1 } else { 2 });
             changed_root = indexed::update(own_root, own_count, event,
                 obligation_hash(event, slot, slot.phase), obligation_hash(event, slot, next_phase),
                 own_map.leaf, own_map.index, own_map.path);
             if action == 2 {
+                assert(now - slot.admitted_at < abandon_after);
+                assert(valid_until - slot.admitted_at <= abandon_after);
                 assert(settlement_marker == [0; 32]);
+            } else if action == 4 {
+                // Before protected release only; the admission counter and
+                // permanent event tombstone prevent refund/reset churn.
+                available = old.available + amount;
+                reserved = old.reserved - amount as u128;
+                assert(event == field(settlement_marker));
+            } else if action == 5 {
+                assert((slot.role == 0) & (now - slot.admitted_at >= abandon_after));
+                burned = amount;
+                reserved = old.reserved - amount as u128;
+                assert(event == field(settlement_marker));
             } else {
+                if resolution.kind == 1 {
+                    assert(now - slot.admitted_at < abandon_after);
+                    assert(valid_until - slot.admitted_at <= abandon_after);
+                }
                 if slot.role == 0 {
                     verify_peer_authority(community, slot, peer_enrollment, field(enrollment_root), now);
                 }
@@ -327,14 +396,15 @@ fn main(
                 assert(event == field(settlement_marker));
             }
         }
-        assert(available <= maximum_available);
-        assert(available as u128 + reserved + burned as u128 == old.available as u128 + old.reserved);
+        assert(available as u128 + reserved <= capacity as u128);
+        assert(available as u128 + reserved + burned as u128 == old.available as u128 + old.reserved + issued as u128);
         let successor = Opening { available, reserved,
             outgoing_root: if slot.role == 0 { changed_root } else { old.outgoing_root },
             outgoing_count: if slot.role == 0 { changed_count } else { old.outgoing_count },
             incoming_root: if slot.role == 1 { changed_root } else { old.incoming_root },
             incoming_count: if slot.role == 1 { changed_count } else { old.incoming_count },
-            pair_root, pair_count, frontier: old.frontier, blind: new_blind };
+            pair_root, pair_count, frontier, created_at: old.created_at,
+            admission_epoch, admissions, blind: new_blind };
         assert(state_hash(community, owner, policy_digest, registered_secret, next_version, successor) == field(next_state));
     }
 }

@@ -3,16 +3,15 @@
 import { UltraHonkVerifierBackend } from '@aztec/bb.js';
 import { OPTIONS, sha } from '../common.mjs';
 import { fieldValue } from '../hashes.mjs';
-import { policyDigest } from '../account-state/hashes.mjs';
-import { publicInputValues as accountPublicInputs } from '../account-state/witness.mjs';
+import { policyDigest, POLICY_KEYS } from '../account-state/hashes.mjs';
+import { publicInputValues as accountPublicInputs, validityHorizon } from '../account-state/witness.mjs';
 import { EXPECTED_KEYS, bytes32, safeInteger, exact, equalBytes, publicInputValues } from './witness.mjs';
 
 const scopeKeys = ['circuitDigest','verifyingKeyDigest'];
 const acceptanceKeys = ['statement','requestId','requestDigest','proofScope','acceptedAt','signature'];
-const accountKeys = ['protocolVersion','community','owner','policyDigest','enrollmentRoot','now','genesis',
+const accountKeys = ['protocolVersion','community','owner','policyDigest','enrollmentRoot','now','validUntil','genesis',
   'previousVersion','nextVersion','previousState','nextState','settlementMarker','policy'];
-const policyKeys = ['initialCredit','maximumAvailable','outgoingReservation','incomingReservation',
-  'policyRevision','policyValidFrom','policyValidUntil'];
+const policyKeys = POLICY_KEYS;
 function checkScope(value) {
   if (!exact(value, scopeKeys)) throw new Error('Proof scope field set');
   scopeKeys.forEach(key => bytes32(value[key])); return value;
@@ -22,7 +21,7 @@ function sameScope(actual, expected) {
   if (!scopeKeys.every(key => equalBytes(actual[key], expected[key]))) throw new Error('Wrong pinned proof scope');
 }
 export async function validateAcceptedContext(record, trusted, verifyAccountAcceptance) {
-  if (record.version !== 1 || !exact(record, ['version','statement','proofScope','proof','accountAcceptance'])) throw new Error('Peer presentation envelope');
+  if (record.version !== 2 || !exact(record, ['version','statement','proofScope','proof','accountAcceptance'])) throw new Error('Peer presentation envelope');
   const s = record.statement, a = record.accountAcceptance, e = trusted.expected;
   publicInputValues(s);
   if (!exact(e, EXPECTED_KEYS)) throw new Error('Independently expected peer context required');
@@ -37,7 +36,7 @@ export async function validateAcceptedContext(record, trusted, verifyAccountAcce
   const now = safeInteger(trusted.now), acceptedAt = safeInteger(a.acceptedAt);
   bytes32(a.requestId); bytes32(a.requestDigest);
   if (!a.requestId.some(Boolean) || typeof a.signature !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(a.signature)
-      || acceptedAt < BigInt(a.statement.now) || acceptedAt > now) throw new Error('Acceptance identifier/signature/time');
+      || acceptedAt < BigInt(a.statement.now) || acceptedAt >= BigInt(a.statement.validUntil) || acceptedAt > now) throw new Error('Acceptance identifier/signature/time');
   const accepted = a.statement;
   for (const name of ['enrollmentRoot','previousState','nextState','settlementMarker']) fieldValue(bytes32(accepted[name]));
   if (accepted.genesis || accepted.nextVersion !== accepted.previousVersion + 1
@@ -49,6 +48,8 @@ export async function validateAcceptedContext(record, trusted, verifyAccountAcce
   const digest = await policyDigest(bytes32(s.community), trusted.accountPolicy);
   if (!equalBytes(digest, s.accountPolicyDigest) || now < BigInt(trusted.accountPolicy.policyValidFrom)
       || now >= BigInt(trusted.accountPolicy.policyValidUntil)) throw new Error('Wrong or expired common policy');
+  if (BigInt(accepted.validUntil) !== validityHorizon(accepted.now, trusted.accountPolicy)
+      || now < BigInt(s.openedAt) || now - BigInt(s.openedAt) >= BigInt(trusted.accountPolicy.abandonAfter)) throw new Error('Expired or mismatched common introduction lease');
   if (typeof verifyAccountAcceptance !== 'function') throw new Error('Real operator acceptance verifier unavailable');
   // This is a host cryptography boundary, not a prover-selected callback. The
   // adapter must call cfrm::accounting::verify_account_acceptance with the pinned operator.

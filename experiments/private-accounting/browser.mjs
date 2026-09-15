@@ -37,7 +37,7 @@ async function main() {
     // available, resolving this base path to /barretenberg-threads.wasm.
     wasmPath: '/barretenberg.wasm', memory: { initial: 2048, maximum: 32768 } });
   try {
-  if (manifest.accountingMode === 'account-state-v1') {
+  if (manifest.accountingMode === 'account-state-v2') {
     const { runAccountState } = await import('./account-state/browser.mjs');
     return await runAccountState({ api, circuit, manifest, verificationKey, post, bytes, metrics, assert, stage });
   }

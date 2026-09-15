@@ -1,13 +1,14 @@
 # Peer reservation proof foundation
 
-**Compiled, unintegrated source candidate.** Crow 9/51 compiled the relation at
-`0ae9b897490bd48810b89fcc561e9e04128a80bc`. No browser proof or operator
+**Version 2 source candidate; validation pending.** Crow 9/51 compiled the older
+v1 relation at `0ae9b897490bd48810b89fcc561e9e04128a80bc`. No v2 browser proof or operator
 acceptance interoperability result is claimed for this circuit. The measured
 account-state runs use a different relation. Production private accounting and
 protected release remain disabled.
 
 This separate Noir relation proves membership of one Prepared (`1`) or Active
-(`2`) obligation in an already accepted account state. Settled (`3`) never
+(`2`) obligation in an already accepted account state. Settled (`3`), Canceled
+(`4`) and Expired (`5`) never
 qualifies. Both roles use this same circuit. Its public statement is for the
 authenticated peer channel only; it must never accompany a named operator
 request. Balance, total reserved credit, other slots, map positions/paths and
@@ -16,10 +17,10 @@ the owner's secret remain private.
 ## Wire and verification contract
 
 ```
-{ version: 1,
+{ version: 2,
   statement: {
     community, owner, peer, role, nonce, group, contactPolicyDigest,
-    historyDigest, phase, accountPolicyDigest, stateVersion,
+    historyDigest, phase, openedAt, accountPolicyDigest, stateVersion,
     stateCommitment, challenge, presentationBinding
   },
   proofScope: { circuitDigest, verifyingKeyDigest },
@@ -34,9 +35,15 @@ statement and account-circuit proof scope. That account scope differs from the
 new peer circuit scope. The peer learns the certificate's metadata as well as
 the selected tuple; no certificate or presentation goes into its named update.
 
-The relation has **355 public field elements**, ordered exactly as `main.nr`
+The relation has **356 public field elements**, ordered exactly as `main.nr`
 and `publicInputValues()`. Arbitrary bytes32 use two big-endian u128 limbs;
 state and presentation field outputs require canonical BN254 encoding.
+
+The public peer-only `openedAt` is tied to the selected slot's immutable common
+lease. Both peers must independently expect that same value. The host rejects
+`now - openedAt >= abandonAfter`; Prepared evidence never authorizes incoming
+debit or payload. Account acceptance uses protocol2 with its common validity
+horizon; its original acceptance time must lie within that signed window.
 
 `createPeerVerifier()` receives locally pinned peer and account circuit/VK
 digests, exact compiled circuit/VK bytes and the host's actual
@@ -79,7 +86,7 @@ The new fixed-length presentation hash is:
 
 ```
 Poseidon2_fixed_10(
-  ASCII("cfrm.peer-reservation.v1"), 1,
+  ASCII("cfrm.peer-reservation.v2"), 1,
   ownerSecretHi128, ownerSecretLo128, acceptedState, selectedSlotHash,
   challengeHi128, challengeLo128, historyHi128, historyLo128)
 ```

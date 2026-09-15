@@ -3,8 +3,11 @@
 import { be, cat, hex, unhex, sha, memberBytes } from '../common.mjs';
 import { fieldBytes, fieldValue, limbs32, hashesFor, POSEIDON_SCHEME } from '../hashes.mjs';
 
-export const ACCOUNT_MODE = 'account-state-v1';
-export const ACCOUNT_DOMAIN = 0x6366726d2e6163636f756e742d73746174652e7631n;
+export const ACCOUNT_MODE = 'account-state-v2';
+export const ACCOUNT_DOMAIN = 0x6366726d2e6163636f756e742d73746174652e7632n;
+export const POLICY_KEYS = ['initialCredit','maximumAvailable','outgoingReservation','incomingReservation',
+  'policyRevision','policyValidFrom','policyValidUntil','newcomerPeriod','rateWindow','newcomerAdmissions',
+  'maximumAdmissions','refillPeriod','refillUnits','abandonAfter'];
 export const DEPTH = 32;
 export const LIMIT = 1n << 32n;
 export const SAFE = 9007199254740991n;
@@ -26,11 +29,17 @@ export function policyBytes(community, policy) {
   const initial = integer(p.initialCredit, 32), maximum = integer(p.maximumAvailable, 32);
   const outgoing = integer(p.outgoingReservation, 32), incoming = integer(p.incomingReservation, 32);
   const revision = time(p.policyRevision), from = time(p.policyValidFrom), until = time(p.policyValidUntil);
+  const newcomer = time(p.newcomerPeriod), window = time(p.rateWindow), refill = time(p.refillPeriod), abandon = time(p.abandonAfter);
+  const newcomerAdmissions = integer(p.newcomerAdmissions, 32), maximumAdmissions = integer(p.maximumAdmissions, 32);
+  const units = integer(p.refillUnits, 32);
   if (maximum === 0n || initial > maximum || outgoing === 0n || incoming === 0n
-      || outgoing > maximum || incoming > maximum || revision === 0n || from === 0n || until <= from) throw new Error('Invalid explicit account policy');
-  return cat(utf8('cfrm.account-policy.v1\0'), bytes32(community),
+      || outgoing > initial || incoming > initial || revision === 0n || from === 0n || until <= from
+      || newcomer === 0n || window === 0n || refill === 0n || abandon < window
+      || newcomerAdmissions === 0n || newcomerAdmissions > maximumAdmissions || units === 0n || units > initial) throw new Error('Invalid explicit account policy');
+  return cat(utf8('cfrm.account-policy.v2\0'), bytes32(community),
     ...[initial, maximum, outgoing, incoming].map(n => be(n, 4)),
-    ...[revision, from, until].map(n => be(n, 8)), new Uint8Array([DEPTH]));
+    ...[revision, from, until, newcomer, window].map(n => be(n, 8)),
+    be(newcomerAdmissions, 4), be(maximumAdmissions, 4), be(refill, 8), be(units, 4), be(abandon, 8), new Uint8Array([DEPTH]));
 }
 export const policyDigest = (community, policy) => sha(policyBytes(community, policy));
 
@@ -56,7 +65,8 @@ export function accountHashes(api) {
       [...limbs32(community), ...limbs32(owner), ...limbs32(policy), fieldValue(secretHash), time(version),
         integer(state.available, 32), integer(state.reserved, 128),
         state.outgoingRoot, integer(state.outgoingCount, 64), state.incomingRoot, integer(state.incomingCount, 64),
-        state.pairRoot, integer(state.pairCount, 64), time(state.frontier), ...limbs32(state.blind)]),
+        state.pairRoot, integer(state.pairCount, 64), time(state.frontier), time(state.createdAt),
+        time(state.admissionEpoch), integer(state.admissions, 32), ...limbs32(state.blind)]),
     obligation: (event, slot, phase) => hash(4,
       [event, integer(slot.role, 8), ...limbs32(slot.peer), ...limbs32(slot.nonce), ...limbs32(slot.group),
         ...limbs32(slot.contactPolicy), integer(slot.amount, 32), integer(phase, 8),

@@ -14,7 +14,7 @@ if (!compiled.program?.bytecode) throw new Error('No compiled peer circuit');
 const circuit = JSON.stringify(compiled.program);
 await mkdir(output, { recursive: true });
 await writeFile(resolve(output, 'circuit.json'), circuit);
-const evidence = { mode: 'peer-reservation-v1', compiler: '1.0.0-beta.26',
+const evidence = { mode: 'peer-reservation-v2', compiler: '1.0.0-beta.26',
   circuitSha256: hash(circuit),
   nargoSha256: hash(await readFile(resolve(source, 'Nargo.toml'))),
   circuitSourceSha256: hash(await readFile(resolve(source, 'src/main.nr'))),

@@ -8,21 +8,21 @@ import { createHash } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 import { OPTIONS } from './common.mjs';
 import { checkScheme, SHA_SCHEME, POSEIDON_SCHEME, POSEIDON_SOURCE } from './hashes.mjs';
-import { policyBytes } from './account-state/hashes.mjs';
+import { policyBytes, POLICY_KEYS } from './account-state/hashes.mjs';
 
 const hash = data => createHash('sha256').update(data).digest('hex');
 const hashScheme = checkScheme(process.env.HASH_SCHEME ?? SHA_SCHEME);
 const accountingMode = process.env.ACCOUNTING_MODE ?? 'settlement-v1';
-if (!['settlement-v1', 'account-state-v1'].includes(accountingMode)) throw new Error('Unsupported accounting mode');
-if (accountingMode === 'account-state-v1' && hashScheme !== POSEIDON_SCHEME) throw new Error('Account state requires pinned Poseidon2');
-const circuitDir = accountingMode === 'account-state-v1' ? 'account-state'
+if (!['settlement-v1', 'account-state-v2'].includes(accountingMode)) throw new Error('Unsupported accounting mode');
+if (accountingMode === 'account-state-v2' && hashScheme !== POSEIDON_SCHEME) throw new Error('Account state requires pinned Poseidon2');
+const circuitDir = accountingMode === 'account-state-v2' ? 'account-state'
   : hashScheme === POSEIDON_SCHEME ? 'circuit-poseidon2' : 'circuit';
-const setupLockPath = accountingMode === 'account-state-v1' ? 'account-state/setup-lock.json' : 'setup-lock.json';
+const setupLockPath = accountingMode === 'account-state-v2' ? 'account-state/setup-lock.json' : 'setup-lock.json';
 let accountPolicy;
-if (accountingMode === 'account-state-v1') {
+if (accountingMode === 'account-state-v2') {
   if (!process.env.ACCOUNT_POLICY_JSON) throw new Error('ACCOUNT_POLICY_JSON required; no product defaults');
   accountPolicy = JSON.parse(process.env.ACCOUNT_POLICY_JSON);
-  const fields = ['initialCredit','maximumAvailable','outgoingReservation','incomingReservation','policyRevision','policyValidFrom','policyValidUntil'];
+  const fields = POLICY_KEYS;
   if (!accountPolicy || Object.keys(accountPolicy).length !== fields.length || !fields.every(key => Object.hasOwn(accountPolicy, key))) throw new Error('Exact policy fields required');
   policyBytes(new Uint8Array(32), accountPolicy); // Validate explicit bounds before compilation.
 }
@@ -117,7 +117,7 @@ try {
     hashScheme, accountingMode, accountPolicy, poseidonSource: hashScheme === POSEIDON_SCHEME ? POSEIDON_SOURCE : null,
     circuitSha256: hash(await readFile('public/circuit.json')), vkSha256: hash(vk),
     circuitSourceSha256: hash(await readFile(circuitDir + '/src/main.nr')), requiredPoints, pointsPerChunk, numPoints, setup, wasm,
-    ...(accountingMode === 'account-state-v1' ? { indexedSourceSha256: hash(await readFile(circuitDir + '/src/indexed.nr')) } : {}),
+    ...(accountingMode === 'account-state-v2' ? { indexedSourceSha256: hash(await readFile(circuitDir + '/src/indexed.nr')) } : {}),
     compileAndSetupMs: performance.now() - started, stats, threads: 1, maximumWasmBytes: 32768 * 65536 };
   await writeFile('public/manifest.json', JSON.stringify(manifest, null, 2));
 } finally { await api.destroy(); }

@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { Barretenberg, BackendType, UltraHonkVerifierBackend } from '@aztec/bb.js';
 import { OPTIONS, hex, unhex, sha, memberBytes } from './common.mjs';
 import { checkScheme, POSEIDON_SCHEME, fieldValue, hashesFor, deriveCheckpoint } from './hashes.mjs';
+import { statementAfterVerification } from './ledger.mjs';
+import { runLedgerContract } from './ledger-contract.mjs';
 
 export async function verifyResults(result, enrolled) {
   if (!enrolled || result.proofs?.length !== 2) throw new Error('Missing independent enrollment/proof evidence');
@@ -58,19 +60,18 @@ export async function verifyResults(result, enrolled) {
       check(await rejects(changed), 'independent verifier rejects changed ' + label);
     }
     check(await verifier.verifyProof(valid, OPTIONS), 'independent verifier still accepts valid proof after malformed inputs');
-    // A deliberately synthetic single-owner ledger fixture begins at each
-    // scenario's already reserved commitment. It does NOT prove production genesis.
-    const states = new Map(proofs.map(p => [p.owner, p.old]));
-    const spent = new Set();
-    const accept = proof => {
-      if (states.get(proof.owner) !== proof.old || spent.has(proof.marker)) return false;
-      states.set(proof.owner, proof.next); spent.add(proof.marker); return true;
-    };
-    check(accept(valid), 'fixture accepts verified successor atomically');
-    check(!accept(valid), 'fixture rejects same receipt replay');
-    check(!accept({ ...valid }), 'fixture rejects cloned proof against consumed state');
+    const cryptographicVerificationMs = performance.now() - started;
+    // Only real verifier-accepted public statements cross this trusted boundary.
+    // SQLite tests retain synthetic pre-reserved genesis and report injected
+    // storage mutations separately from cryptographic verification evidence.
+    const storageStarted = performance.now();
+    const ledger = await runLedgerContract(proofs.map(proof => statementAfterVerification(proof, {
+      hashScheme, circuitSha256: manifest.circuitSha256, verificationKeySha256: manifest.vkSha256,
+    })));
+    ledger.elapsedMs = performance.now() - storageStarted;
+    checks.push(...ledger.checks);
     check(proofs[0].marker !== proofs[1].marker, 'different scenario proofs expose different markers');
-    return { checks, elapsedMs: performance.now() - started, verifierTarget: OPTIONS.verifierTarget, hashScheme,
+    return { checks, ledger, cryptographicVerificationMs, elapsedMs: performance.now() - started, verifierTarget: OPTIONS.verifierTarget, hashScheme,
       witnessReceived: false, genesis: 'synthetic pre-reserved opening; production genesis is not implemented' };
   } finally { await api.destroy(); }
 }

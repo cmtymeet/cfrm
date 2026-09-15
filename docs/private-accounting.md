@@ -220,11 +220,9 @@ receipts, and production `resolve_private` remains unsupported.
 
 The next bounded checks are:
 
-1. Attribute gate costs on the existing compiled circuit, then separately
-   measure a reviewed proof-friendly commitment/Merkle variant retaining
-   WebCrypto P-256 receipt authentication. Continue measuring process memory
-   separately from linear WASM allocation. Measure target mobile browsers
-   before accepting an all-platform feasibility claim.
+1. Extend the measured commitment comparison below with target-browser resource
+   measurements. Continue separating sampled process memory from linear WASM
+   allocation; no all-platform feasibility claim is established.
 
 2. Replace the synthetic pre-reserved starting state with one root-owned,
    durable genesis and an authorized reservation transition. Test recovery and
@@ -243,7 +241,7 @@ If browser resources are unsuitable, measure the unchanged-Ed25519/zkVM route
 separately; never remove owner binding or upload a private witness to make a
 benchmark pass. None of these routes yet constitutes the full backend.
 
-### Bounded cost comparison proposal
+### Measured commitment comparison
 
 The [artifact-only profiler](../experiments/private-accounting/profile.mjs)
 passed on Crow 9/39: SHA-256 source accounts for 152,608 gates (76.2%) and P-256
@@ -253,16 +251,25 @@ primitive timing or a proportional memory forecast.
 A separately versioned comparison keeps the exact SHA-256/WebCrypto P-256
 receipt and root-owned Ed25519 delegation while using the maintained
 [Noir Poseidon2 fixed-length hash](https://github.com/noir-lang/poseidon/blob/f249446e6e01f7b607ad35351cebe0cc20068cb7/src/poseidon2.nr)
-for commitments and Merkle nodes. Reuse the upstream sponge/permutation; do not
-write one. Pin the field, arity, domain tags and encoding. Represent each
-256-bit identity/key component using checked limbs, never modular reduction
-of a whole 32-byte identifier. Keep all equality/range/role/time constraints.
+for commitments and Merkle nodes. It reuses the upstream sponge, pins field,
+arity and domains, and represents each 256-bit identifier with two checked
+128-bit limbs. All equality/range/role/time constraints remain.
 
-The independent verifier must derive the common root from the original
-Rust-verified signed enrollments, using the same pinned hash and cross-language
-vectors; a browser-supplied root is insufficient. Its new signed delegation
-explicitly binds the hash scheme. The [BB implementation](https://github.com/AztecProtocol/aztec-packages/blob/v5.0.0/barretenberg/cpp/src/barretenberg/crypto/poseidon2/poseidon2.hpp)
-provides a maintained native counterpart. Existing library version compatibility,
-field encoding and composition still require checking. The isolated comparison
-has source review but awaits CI; no performance benefit or new audit is claimed.
-Its namespace change is not a migration path for existing states or markers.
+The independent verifier derives its root from the original Rust-verified signed
+enrollments using the pinned [BB hash](https://github.com/AztecProtocol/aztec-packages/blob/v5.0.0/barretenberg/cpp/src/barretenberg/crypto/poseidon2/poseidon2.hpp).
+Rust supplies verified original entries, not a Poseidon2 root. The delegation
+binds the scheme; real browser proofs test cross-language agreement and reject
+a genuinely re-signed field-congruent nonce retaining the old state/marker.
+
+Crow **9/40**, source `d44c9f1e33f903a8e9a4bfea2a54ea82e9652521`, passed
+**51 browser +20 independent checks**: 75,771 gates, padded to 131,072; two
+14,656-byte proofs; proving 14.28/13.40 seconds; pinned-key verification
+154.70/294.07 ms. Loaded bytes were 42.00 MB. Sampled PSS reached
+**779,798,528 bytes (743.7 MiB)**, but only 184 of 214 samples were complete
+and the maximum gap was 718.48 ms. Exact peak WASM memory remains unknown.
+Same-source SHA **9/41** passed 42+20: proving 18.42/17.77 seconds, verification
+40.66/33.13 ms, sampled PSS 959.7 MiB (205/229 complete; maximum gap 200.96 ms).
+These shared-host runs establish compatibility, not stable performance gains or
+mobile suitability. The unchanged setup floor remains 524,288 points.
+This namespace change is not a migration
+path for existing states/markers, and the composition has no audit claim.

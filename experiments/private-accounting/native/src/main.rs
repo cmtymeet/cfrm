@@ -65,7 +65,8 @@ fn enrollment_bytes(e: &Enrollment) -> Result<Vec<u8>> {
     decode::<64>(&e.account_key)?;
     let secret_hash = decode::<32>(&e.secret_hash)?;
     if e.hash_scheme == HashScheme::Poseidon2
-        && secret_hash >= decode::<32>("30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001")?
+        && secret_hash
+            >= decode::<32>("30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001")?
     {
         return Err("noncanonical Poseidon2 field".into());
     }
@@ -74,22 +75,27 @@ fn enrollment_bytes(e: &Enrollment) -> Result<Vec<u8>> {
     }
     let message = if e.hash_scheme == HashScheme::Sha256 {
         json!([
-        "cfrm.accounting-enrollment.spike.v1",
-        COMMUNITY,
-        e.admission.member_id,
-        e.account_key,
-        e.secret_hash,
-        e.issued_at,
-        e.expires_at
+            "cfrm.accounting-enrollment.spike.v1",
+            COMMUNITY,
+            e.admission.member_id,
+            e.account_key,
+            e.secret_hash,
+            e.issued_at,
+            e.expires_at
         ])
     } else {
         json!([
-            "cfrm.accounting-enrollment.spike.v2", e.hash_scheme, COMMUNITY,
-            e.admission.member_id, e.account_key, e.secret_hash, e.issued_at, e.expires_at
+            "cfrm.accounting-enrollment.spike.v2",
+            e.hash_scheme,
+            COMMUNITY,
+            e.admission.member_id,
+            e.account_key,
+            e.secret_hash,
+            e.issued_at,
+            e.expires_at
         ])
     };
-    serde_json::to_vec(&message)
-    .map_err(|_| "canonical enrollment".into())
+    serde_json::to_vec(&message).map_err(|_| "canonical enrollment".into())
 }
 fn trust() -> AdmissionTrust {
     AdmissionTrust {
@@ -205,7 +211,10 @@ fn verify(entries: &[Enrollment], hash_scheme: HashScheme) -> Result<Value> {
         }
     }
     let root = if hash_scheme == HashScheme::Sha256 {
-        Some(HEX.encode(&node(node(leaves[0], leaves[1]), node(leaves[2], leaves[3]))))
+        Some(HEX.encode(&node(
+            node(leaves[0], leaves[1]),
+            node(leaves[2], leaves[3]),
+        )))
     } else {
         // No new Rust hash primitive: each verifier computes Poseidon2 itself
         // from these original, strictly verified signed entries using pinned BB.
@@ -219,8 +228,16 @@ fn verify(entries: &[Enrollment], hash_scheme: HashScheme) -> Result<Value> {
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
 enum Command {
-    Enroll { keys: Vec<PublicKey>, #[serde(rename = "hashScheme")] hash_scheme: HashScheme },
-    Verify { entries: Vec<Enrollment>, #[serde(rename = "hashScheme")] hash_scheme: HashScheme },
+    Enroll {
+        keys: Vec<PublicKey>,
+        #[serde(rename = "hashScheme")]
+        hash_scheme: HashScheme,
+    },
+    Verify {
+        entries: Vec<Enrollment>,
+        #[serde(rename = "hashScheme")]
+        hash_scheme: HashScheme,
+    },
 }
 fn command(c: Command) -> Result<Value> {
     match c {
@@ -235,7 +252,10 @@ fn command(c: Command) -> Result<Value> {
                 .collect::<Result<Vec<_>>>()?;
             verify(&entries, hash_scheme)
         }
-        Command::Verify { entries, hash_scheme } => verify(&entries, hash_scheme),
+        Command::Verify {
+            entries,
+            hash_scheme,
+        } => verify(&entries, hash_scheme),
     }
 }
 fn main() -> std::io::Result<()> {

@@ -33,7 +33,9 @@ is synthetic witness data, **not** the product's `n`, `x` or reward policy.
 This does not prove how the previous reservation was created. The Node ledger
 fixture explicitly begins at the scenarios' already reserved commitments and
 tests compare-and-swap/replay behavior only after real proof verification. It
-does not implement production genesis, recovery or durable storage. Duplicate
+does not implement production genesis or account recovery. The current
+[SQLite storage contract](ledger.md) adds bounded process-restart and transaction
+tests; it is source-reviewed and awaits CI. Duplicate
 identity rejection in the native fixture tests enrollment uniqueness, not a
 zero-knowledge genesis proof.
 
@@ -114,7 +116,8 @@ rates. Additional negatives cover scheme reinterpretation, noncanonical fields
 and field-congruent identities. One test genuinely re-signs a receipt after
 changing nonce `7` to `7 + field_modulus`, retaining the old state and event
 marker; an erroneous whole-field identity conversion must not make it valid.
-The comparison is ready for CI; **no Poseidon2 performance result is recorded yet**.
+The comparison passed Crow **9/40** with actual browser proofs and independent
+verification; measurements and their limits are recorded below.
 The conservative 524,288-point setup floor remains pinned; a smaller setup has
 not been substituted to improve the benchmark.
 
@@ -201,8 +204,11 @@ using its local pinned verification key and the Rust fixture's independently
 verified checkpoint. It receives no witness. It also tests changed public
 inputs/proof bytes and replay/stale-successor rejection in the synthetic ledger.
 Both verifiers use Barretenberg, so this is not implementation diversity.
-The cloned-proof rejection is a synchronous in-memory compare-and-swap test,
-not concurrent independent device proving or distributed ledger testing. The
+The measurements recorded through run 41 use synchronous in-memory
+compare-and-swap. The current [SQLite replacement](ledger.md) races independent
+processes using an actually verified successor and tests exact retries, lost
+responses and transactional rollback. It awaits execution; this does not claim
+concurrent independent device proving or distributed ledger consensus. The
 two proofs concern different random events. Their unequal markers, and a
 separate same-nonce/opposite-owner hash comparison, do not measure traffic
 unlinkability or constitute two proofs of one shared event.
@@ -288,6 +294,71 @@ Crow **9/39** attributed 152,608 gates to SHA-256 source (76.2%), 43,103 to P-25
 556 to other located source and 3,738 to opcodes without debug locations, with
 209 further gates outside the opcode totals. This motivates the separate hash
 comparison; it does not predict a proportional reduction in time or memory.
+
+### Measured Poseidon2 comparison: Crow 9/40
+
+Source `d44c9f1e33f903a8e9a4bfea2a54ea82e9652521` passed **51 browser checks
+and 20 independent-verifier checks** with
+`HASH_SCHEME=poseidon2-bn254-fixed-128-v1`, using the same recorded Chrome and
+Node versions. Hash-verified artifacts are retained under
+`/workspaces/component-releases/cfrm/d44c9f1e33f903a8e9a4bfea2a54ea82e9652521/private-accounting-poseidon2-bn254-fixed-128-v1`.
+The compiled circuit SHA-256 is
+`4820f7cb931baf107a3b5f2037eeac50533b15b3128b1d951914b8777efaaf84`.
+
+| Measurement | Outgoing peer answer | Incoming owner closure |
+| --- | ---: | ---: |
+| Witness generation | 231.32 ms | 188.97 ms |
+| Browser proving | 14.28 s | 13.40 s |
+| Browser verification with pinned key | 154.70 ms | 294.07 ms |
+| Binary proof, excluding public inputs/JSON | 14,656 bytes | 14,656 bytes |
+
+The circuit had **75,771 gates**, padded to 131,072, compared with the SHA
+baseline's 200,214 gates padded to 262,144. The setup floor, proof format,
+one-thread setting and 2 GiB WASM ceiling stayed unchanged. The harness recorded
+41,997,927 loaded bytes and no forbidden requests or browser errors. The complete
+independent-verifier batch took 151.54 ms, not a per-proof measurement.
+
+The largest complete sampled browser-family PSS sum was **779,798,528 bytes
+(743.7 MiB)**; the largest complete RSS sum was 886,050,816 bytes. Of 214 samples,
+184 were complete and 30 incomplete, with process exits, unreadable memory or
+children and a sampling deadline/read limit recorded. The maximum gap was
+718.48 ms, maximum sample duration 717.31 ms, and up to eleven processes were
+observed. End-of-run JS heap was 66,422,918 bytes. These gaps make the process
+estimate less complete than run 9/38; **exact peak WASM memory remains unknown**.
+
+This run observed lower gate count, proving times and sampled PSS than run 9/38.
+It is one desktop run per mode on a shared host, with different random events;
+it does not establish a stable speedup or proportional memory saving. Browser
+verification was slower despite the smaller circuit. The same-source SHA result
+follows below. Roughly 744 MiB of observed browser memory and
+13–14 seconds of proving still do not establish an acceptable mobile experience.
+No full accounting, traffic-unlinkability or audit claim follows from this test.
+
+### Same-source SHA compatibility: Crow 9/41
+
+The same source `d44c9f1e33f903a8e9a4bfea2a54ea82e9652521` and dependency locks
+passed **42 browser checks and 20 independent-verifier checks** with
+`HASH_SCHEME=sha256-v1`. Hash-verified artifacts are retained under
+`/workspaces/component-releases/cfrm/d44c9f1e33f903a8e9a4bfea2a54ea82e9652521/private-accounting`.
+
+| Measurement | Outgoing peer answer | Incoming owner closure |
+| --- | ---: | ---: |
+| Witness generation | 40.85 ms | 32.48 ms |
+| Browser proving | 18.42 s | 17.77 s |
+| Browser verification with pinned key | 40.66 ms | 33.13 ms |
+| Binary proof, excluding public inputs/JSON | 14,656 bytes | 14,656 bytes |
+
+The SHA circuit retained 200,214 gates, padded to 262,144. Loaded bytes were
+41,854,095. Sampled browser-family PSS reached **1,006,270,464 bytes (959.7 MiB)**,
+with 205 complete and 24 incomplete samples out of 229; maximum gap was
+200.96 ms. Exited or unreadable processes and incomplete memory measurements
+were recorded. The same incomplete-estimate caveats apply. The independent
+verifier's complete timed batch took 128.68 ms. Browser/runtime versions were
+unchanged and no forbidden requests or browser errors were recorded.
+
+This checks compatibility of the shared glue in both modes and supplies a closer
+comparison than separate source revisions. It remains two warmed proofs per
+mode, without repeated trials, controlled host load or target-mobile evidence.
 
 ## Required work beyond this spike
 

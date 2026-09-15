@@ -41,7 +41,7 @@ fn forged_or_expired_request_leaves_no_account_and_nonce_cannot_change_content()
 }
 
 #[test]
-fn monthly_allowance_cannot_be_reclaimed_on_reconnect_or_clock_rollback() {
+fn periodic_allowance_cannot_be_reclaimed_on_reconnect_or_clock_rollback() {
     let f=Fixture::new();let dir=tempfile::tempdir().unwrap();let path=dir.path().join("state.sqlite");
     {let mut l=AllocationLedger::open(&path,f.trust.clone(),policy()).unwrap();l.reserve(&f.grant(5,&f.device),&f.authorize(5,&f.device),&request(&f,&f.device,10,110),||110).unwrap();l.reserve(&f.grant(5,&f.device),&f.authorize(5,&f.device),&request(&f,&f.device,11,210),||210).unwrap();assert_eq!(l.balance(&member_id(5)).unwrap(),Some(1));}
     let mut l=AllocationLedger::open(&path,f.trust.clone(),policy()).unwrap();

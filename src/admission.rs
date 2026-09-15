@@ -79,7 +79,8 @@ pub struct DeviceAuthorization {
 
 pub fn member_id(community: &str, root_public_key: &str) -> Result<String, Error> {
     if !scope(community) { return Err(Error::InvalidInput); }
-    decode::<32>(root_public_key)?;
+    let key = VerifyingKey::from_bytes(&decode::<32>(root_public_key)?).map_err(|_| Error::Admission)?;
+    if key.is_weak() { return Err(Error::Admission); }
     let bytes = serde_json::to_vec(&serde_json::json!(["cmsg.member.v1", community, root_public_key])).map_err(|_| Error::InvalidInput)?;
     Ok(digest(&bytes))
 }
@@ -88,7 +89,8 @@ pub fn device_authorization_bytes(value: &DeviceAuthorization) -> Result<Vec<u8>
     if value.version != 1 || value.issued_at == 0 || value.issued_at >= value.expires_at || value.expires_at > MAX_INTEGER || member_id(&value.community_id, &value.root_public_key)? != value.member_id {
         return Err(Error::Admission);
     }
-    decode::<32>(&value.device_public_key)?;
+    let key = VerifyingKey::from_bytes(&decode::<32>(&value.device_public_key)?).map_err(|_| Error::Admission)?;
+    if key.is_weak() { return Err(Error::Admission); }
     serde_json::to_vec(&serde_json::json!(["cmsg.device.v1", value.community_id, value.member_id, value.root_public_key, value.device_public_key, value.issued_at, value.expires_at])).map_err(|_| Error::Admission)
 }
 

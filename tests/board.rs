@@ -49,7 +49,7 @@ fn device_signature_binds_member_route_and_entire_update() {
 }
 
 #[test]
-fn permanent_sequence_floor_survives_offline_update_until_old_leases_expire() {
+fn disconnect_keeps_sequence_floor_until_old_leases_expire() {
     let f = Fixture::new(); let grant=f.grant(5,&f.device);
     let mut board=MeetingBoard::new(f.trust.clone(),limits()).unwrap();
     let old=update(&f,&f.device,5,1,true);

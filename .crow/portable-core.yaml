@@ -6,6 +6,7 @@ variables:
   SOURCE_SHA256: {default: ""}
   ARTIFACT_ROOT: {default: ""}
   CARGO_TARGET_DIR: {default: ""}
+  RESOLVE_DEPENDENCIES: {default: "0"}
 steps:
   - name: verified-source
     image: bash

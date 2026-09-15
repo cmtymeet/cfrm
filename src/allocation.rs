@@ -61,6 +61,17 @@ impl From<rusqlite::Error> for Error {
     fn from(_: rusqlite::Error) -> Self { Self::Storage }
 }
 
+pub(crate) fn sql_integer(value: u64) -> Result<i64, Error> {
+    if value > MAX_INTEGER { return Err(Error::Storage); }
+    i64::try_from(value).map_err(|_| Error::Storage)
+}
+
+pub(crate) fn stored_integer(value: i64) -> Result<u64, Error> {
+    let value = u64::try_from(value).map_err(|_| Error::Storage)?;
+    if value > MAX_INTEGER { return Err(Error::Storage); }
+    Ok(value)
+}
+
 impl AllocationLedger {
     pub fn open(path: impl AsRef<Path>, trust: AdmissionTrust, policy: AllocationPolicy) -> Result<Self, Error> {
         let policy_digest = policy_digest(&policy)?;
@@ -72,7 +83,9 @@ impl AllocationLedger {
             PRAGMA foreign_keys=ON;
             CREATE TABLE IF NOT EXISTS cfrm_allocation_config (singleton INTEGER PRIMARY KEY CHECK(singleton=1), config TEXT NOT NULL, clock_floor INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS cfrm_allocation_members (member TEXT PRIMARY KEY, credits INTEGER NOT NULL CHECK(credits>=0), last_period INTEGER NOT NULL) WITHOUT ROWID;
-            CREATE TABLE IF NOT EXISTS cfrm_allocation_reservations (member TEXT NOT NULL REFERENCES cfrm_allocation_members(member), nonce TEXT NOT NULL, request_digest TEXT NOT NULL, remaining INTEGER NOT NULL, PRIMARY KEY(member,nonce)) WITHOUT ROWID;")?;
+            CREATE TABLE IF NOT EXISTS cfrm_allocation_reservations (member TEXT NOT NULL REFERENCES cfrm_allocation_members(member), nonce TEXT NOT NULL, request_digest TEXT NOT NULL, remaining INTEGER NOT NULL, PRIMARY KEY(member,nonce)) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS cfrm_allocation_responses (member TEXT NOT NULL, nonce TEXT NOT NULL, response BLOB NOT NULL, PRIMARY KEY(member,nonce), FOREIGN KEY(member,nonce) REFERENCES cfrm_allocation_reservations(member,nonce)) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS cfrm_permit_epochs (context TEXT PRIMARY KEY, key_digest TEXT NOT NULL UNIQUE) WITHOUT ROWID;")?;
         let config = serde_json::to_string(&serde_json::json!(["cfrm.allocation.database.v1", trust.community_id, trust.policy_digest, BASE64URL_NOPAD.encode(&trust.issuer_public_key), policy_digest])).map_err(|_| Error::InvalidInput)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let prior: Option<String> = transaction.query_row("SELECT config FROM cfrm_allocation_config WHERE singleton=1", [], |row| row.get(0)).optional()?;
@@ -86,6 +99,12 @@ impl AllocationLedger {
     /// for the exact blinded request; this is not a redeemable introduction token.
     /// The same signed request recovers its original result without another debit.
     pub fn reserve(&mut self, grant: &AdmissionGrant, authorization: &DeviceAuthorization, request: &AllocationRequest, clock: impl Fn() -> u64) -> Result<Reservation, Error> {
+        self.issue_with(grant, authorization, request, clock, |_, _, _| Ok(Vec::new())).map(|(reservation, _)| reservation)
+    }
+
+    // The response is generated only after authorization and quota checks, then
+    // committed with the debit. No private-key result escapes before commit.
+    pub(crate) fn issue_with(&mut self, grant: &AdmissionGrant, authorization: &DeviceAuthorization, request: &AllocationRequest, clock: impl Fn() -> u64, issue: impl FnOnce(&rusqlite::Transaction<'_>, &[u8], u64) -> Result<Vec<u8>, Error>) -> Result<(Reservation, Vec<u8>), Error> {
         let before = clock();
         verify_admission(grant, &self.trust, before)?;
         verify_device_authorization(authorization, grant, before)?;
@@ -100,37 +119,47 @@ impl AllocationLedger {
         // A competing writer may hold the lock until the authorization expires.
         // Sample trusted time again under the lock, before every new effect.
         let now = clock();
-        let floor: u64 = transaction.query_row("SELECT clock_floor FROM cfrm_allocation_config WHERE singleton=1", [], |row| row.get(0))?;
+        let floor = stored_integer(transaction.query_row("SELECT clock_floor FROM cfrm_allocation_config WHERE singleton=1", [], |row| row.get::<_,i64>(0))?)?;
         if now < floor || now < before || now > MAX_INTEGER { return Err(Error::ClockRollback); }
         if now < request.issued_at || now >= request.expires_at || now >= grant.expires_at || now >= authorization.expires_at { return Err(Error::Expired); }
-        let prior: Option<(String, u64)> = transaction.query_row("SELECT request_digest,remaining FROM cfrm_allocation_reservations WHERE member=?1 AND nonce=?2", params![request.member_id,request.nonce], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
+        let prior: Option<(String, i64)> = transaction.query_row("SELECT request_digest,remaining FROM cfrm_allocation_reservations WHERE member=?1 AND nonce=?2", params![request.member_id,request.nonce], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
         if let Some((prior, remaining_credits)) = prior {
+            let remaining_credits = stored_integer(remaining_credits)?;
+            if remaining_credits > self.policy.credit_cap { return Err(Error::Storage); }
             if prior != request_digest { return Err(Error::Replay); }
-            transaction.execute("UPDATE cfrm_allocation_config SET clock_floor=?1 WHERE singleton=1", [now])?;
+            let response: Option<Vec<u8>> = transaction.query_row("SELECT response FROM cfrm_allocation_responses WHERE member=?1 AND nonce=?2", params![request.member_id,request.nonce], |row| row.get(0)).optional()?;
+            transaction.execute("UPDATE cfrm_allocation_config SET clock_floor=?1 WHERE singleton=1", [sql_integer(now)?])?;
             transaction.commit()?;
-            return Ok(Reservation { request_digest, remaining_credits });
+            return Ok((Reservation { request_digest, remaining_credits }, response.unwrap_or_default()));
         }
         let period = now / self.policy.period_seconds;
-        let account: Option<(u64,u64)> = transaction.query_row("SELECT credits,last_period FROM cfrm_allocation_members WHERE member=?1", [&request.member_id], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
+        let account: Option<(i64,i64)> = transaction.query_row("SELECT credits,last_period FROM cfrm_allocation_members WHERE member=?1", [&request.member_id], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
         let credits = match account {
             Some((credits,last_period)) => {
+                let credits = stored_integer(credits)?;
+                let last_period = stored_integer(last_period)?;
+                if credits > self.policy.credit_cap { return Err(Error::Storage); }
                 let elapsed = period.checked_sub(last_period).ok_or(Error::ClockRollback)?;
                 credits.saturating_add(elapsed.saturating_mul(self.policy.periodic_credits)).min(self.policy.credit_cap)
             },
             None => self.policy.initial_credits,
         };
         let remaining_credits = credits.checked_sub(1).ok_or(Error::NoAllowance)?;
-        transaction.execute("INSERT INTO cfrm_allocation_members(member,credits,last_period) VALUES(?1,?2,?3) ON CONFLICT(member) DO UPDATE SET credits=excluded.credits,last_period=excluded.last_period", params![request.member_id,remaining_credits,period])?;
-        transaction.execute("INSERT INTO cfrm_allocation_reservations(member,nonce,request_digest,remaining) VALUES(?1,?2,?3,?4)", params![request.member_id,request.nonce,request_digest,remaining_credits])?;
-        transaction.execute("UPDATE cfrm_allocation_config SET clock_floor=?1 WHERE singleton=1", [now])?;
+        let blinded = BASE64URL_NOPAD.decode(request.blinded_request.as_bytes()).map_err(|_| Error::InvalidInput)?;
+        let response = issue(&transaction, &blinded, now)?;
+        transaction.execute("INSERT INTO cfrm_allocation_members(member,credits,last_period) VALUES(?1,?2,?3) ON CONFLICT(member) DO UPDATE SET credits=excluded.credits,last_period=excluded.last_period", params![request.member_id,sql_integer(remaining_credits)?,sql_integer(period)?])?;
+        transaction.execute("INSERT INTO cfrm_allocation_reservations(member,nonce,request_digest,remaining) VALUES(?1,?2,?3,?4)", params![request.member_id,request.nonce,request_digest,sql_integer(remaining_credits)?])?;
+        transaction.execute("INSERT INTO cfrm_allocation_responses(member,nonce,response) VALUES(?1,?2,?3)", params![request.member_id,request.nonce,response])?;
+        transaction.execute("UPDATE cfrm_allocation_config SET clock_floor=?1 WHERE singleton=1", [sql_integer(now)?])?;
         transaction.commit()?;
-        Ok(Reservation { request_digest, remaining_credits })
+        Ok((Reservation { request_digest, remaining_credits }, response))
     }
 
     /// Trusted local storage diagnostic, not an unauthenticated network endpoint.
     pub fn balance(&self, member_id: &str) -> Result<Option<u64>, Error> {
         decode::<32>(member_id)?;
-        self.connection.query_row("SELECT credits FROM cfrm_allocation_members WHERE member=?1", [member_id], |row| row.get(0)).optional().map_err(Into::into)
+        let balance: Option<i64> = self.connection.query_row("SELECT credits FROM cfrm_allocation_members WHERE member=?1", [member_id], |row| row.get(0)).optional()?;
+        balance.map(|value| { let value = stored_integer(value)?; if value > self.policy.credit_cap { return Err(Error::Storage); } Ok(value) }).transpose()
     }
     /// No deployed proof backend currently binds a hidden answer/close receipt
     /// to the debited member without enabling pooled credits.

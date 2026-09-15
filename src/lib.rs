@@ -5,6 +5,10 @@ pub mod admission;
 pub mod board;
 #[cfg(feature = "sqlite")]
 pub mod allocation;
+#[cfg(feature = "permits")]
+pub mod permits;
+#[cfg(all(feature = "permit-issuer", not(target_arch = "wasm32")))]
+pub mod permit_issuer;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -19,6 +23,7 @@ pub enum Error {
     PolicyMismatch,
     Storage,
     UnsupportedCapability,
+    CryptoProvider,
 }
 
 impl std::fmt::Display for Error {

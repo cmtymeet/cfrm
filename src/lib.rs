@@ -2,6 +2,7 @@
 //! No profile content, messages, recipient IDs or relationship map belong here.
 
 pub mod accounting;
+mod accounting_policy;
 #[cfg(feature = "sqlite")]
 pub mod accounting_ledger;
 pub mod admission;

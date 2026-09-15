@@ -27,6 +27,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{path::Path, time::Duration};
 
+mod tuning;
+pub use tuning::WaitingPeriodTuning;
+use tuning::{check_config, config_bytes, StoredConfig};
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccountLedgerPolicy {
@@ -44,6 +48,8 @@ pub struct AccountLedger<V: AccountProofVerifier> {
     community: [u8; 32],
     policy: AccountLedgerPolicy,
     policy_digest: [u8; 32],
+    config: Vec<u8>,
+    tuning_revision: u64,
     proof_scope: AccountProofScope,
     verifier: V,
     operator: SigningKey,
@@ -170,7 +176,7 @@ impl<V: AccountProofVerifier> AccountLedger<V> {
     pub fn open(
         path: impl AsRef<Path>,
         trust: AdmissionTrust,
-        policy: AccountLedgerPolicy,
+        mut policy: AccountLedgerPolicy,
         verifier: V,
         operator: SigningKey,
     ) -> Result<Self, Error> {
@@ -186,21 +192,14 @@ impl<V: AccountProofVerifier> AccountLedger<V> {
         }
         decode::<32>(&trust.policy_digest)?;
         let community: [u8; 32] = Sha256::digest(trust.community_id.as_bytes()).into();
-        let policy_digest = policy.account.digest(&community)?;
+        let mut policy_digest = policy.account.digest(&community)?;
         let proof_scope = verifier.scope();
         if proof_scope.circuit_digest == [0; 32] || proof_scope.verifying_key_digest == [0; 32] {
             return Err(Error::InvalidInput);
         }
-        let config = serde_json::to_vec(&serde_json::json!([
-            "cfrm.account.database.v1",
-            trust.community_id,
-            trust.policy_digest,
-            trust.issuer_public_key,
-            policy,
-            proof_scope,
-            operator.verifying_key().to_bytes()
-        ]))
-        .map_err(|_| Error::InvalidInput)?;
+        let mut tuning_revision = 0;
+        let mut config = config_bytes(&trust, &policy, &proof_scope,
+            operator.verifying_key().to_bytes(), tuning_revision)?;
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
@@ -229,9 +228,17 @@ impl<V: AccountProofVerifier> AccountLedger<V> {
             )
             .optional()?;
         if let Some(prior) = prior {
-            if prior != config {
-                return Err(Error::PolicyMismatch);
-            }
+            let stored: StoredConfig = serde_json::from_slice(&prior).map_err(|_| Error::PolicyMismatch)?;
+            // The supplied wait is a bootstrap value. A restart loads the
+            // durably tuned wait while every immutable setting stays pinned.
+            policy.account.abandon_after = stored.policy.account.abandon_after;
+            policy.account.validate()?;
+            tuning_revision = stored.tuning_revision;
+            if tuning_revision > MAX_INTEGER { return Err(Error::PolicyMismatch); }
+            config = config_bytes(&trust, &policy, &proof_scope,
+                operator.verifying_key().to_bytes(), tuning_revision)?;
+            if prior != config { return Err(Error::PolicyMismatch); }
+            policy_digest = policy.account.digest(&community)?;
         } else {
             transaction.execute("INSERT INTO cfrm_accounts_config VALUES(1,?1,0)", [&config])?;
         }
@@ -242,6 +249,8 @@ impl<V: AccountProofVerifier> AccountLedger<V> {
             community,
             policy,
             policy_digest,
+            config,
+            tuning_revision,
             proof_scope,
             verifier,
             operator,
@@ -301,8 +310,6 @@ impl<V: AccountProofVerifier> AccountLedger<V> {
         }
         let statement = &request.statement;
         if statement.community != self.community
-            || statement.policy != self.policy.account
-            || statement.policy_digest != self.policy_digest
             || request.proof_scope != self.proof_scope
         {
             return Err(Error::PolicyMismatch);
@@ -344,6 +351,10 @@ impl<V: AccountProofVerifier> AccountLedger<V> {
             transaction.commit()?;
             return Ok(result);
         }
+        check_config(&transaction, &self.config)?;
+        if statement.policy != self.policy.account || statement.policy_digest != self.policy_digest {
+            return Err(Error::PolicyMismatch);
+        }
         check_pending(
             &transaction,
             request,
@@ -381,6 +392,10 @@ impl<V: AccountProofVerifier> AccountLedger<V> {
             advance_clock(&transaction, completed)?;
             transaction.commit()?;
             return Ok(result);
+        }
+        check_config(&transaction, &self.config)?;
+        if statement.policy != self.policy.account || statement.policy_digest != self.policy_digest {
+            return Err(Error::PolicyMismatch);
         }
         check_pending(
             &transaction,

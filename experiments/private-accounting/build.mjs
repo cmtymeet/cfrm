@@ -61,9 +61,19 @@ try {
   // The upstream browser bundle defaults to fetching an embedded data: URL.
   // Serve the pinned package's real WASM locally to retain connect-src 'self'.
   const backendDir = dirname(fileURLToPath(import.meta.resolve('@aztec/bb.js')));
+  const browserAssets = resolve(backendDir, '..', 'browser', 'barretenberg_wasm', 'fetch_code', 'browser');
   const wasm = [];
   for (const name of ['barretenberg', 'barretenberg-threads']) {
-    const data = gunzipSync(await readFile(resolve(backendDir, 'barretenberg_wasm', name + '.wasm.gz')));
+    // bb.js 5.0.0 ships both browser binaries as generated data-URL modules;
+    // dest/node ships only the shared-memory .wasm.gz. Read the exact published
+    // literal without evaluating it or changing the installed package.
+    const source = await readFile(resolve(browserAssets, name + '.js'), 'utf8');
+    const embedded = /^const barretenberg = "data:application\/gzip;base64,([A-Za-z0-9+/]+={0,2})";\s*export default barretenberg;\s*$/.exec(source);
+    if (!embedded) throw new Error('Pinned browser WASM module layout changed: ' + name);
+    const compressed = Buffer.from(embedded[1], 'base64');
+    if (compressed.toString('base64') !== embedded[1]) throw new Error('Invalid embedded browser WASM encoding');
+    const data = gunzipSync(compressed, { maxOutputLength: 128 * 1024 * 1024 });
+    if (data.length < 8 || !data.subarray(0, 8).equals(Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]))) throw new Error('Invalid browser WASM header');
     await writeFile('public/' + name + '.wasm', data);
     wasm.push({ name: name + '.wasm', bytes: data.length, sha256: hash(data) });
   }

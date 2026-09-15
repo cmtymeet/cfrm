@@ -108,6 +108,10 @@ audit. The circuit, verification key and setup files are served locally to the
 browser. Automatic backend SRS downloading is disabled.
 The installed backend's WASM files are also copied, hashed and served locally;
 an explicit `wasmPath` avoids its default embedded `data:` URL fetch.
+The exact 5.0.0 package embeds both browser binaries in
+[generated JavaScript literals](https://github.com/AztecProtocol/aztec-packages/blob/v5.0.0/barretenberg/ts/scripts/browser_postprocess.sh);
+the build extracts those literals without evaluating them, validates their
+encoding and WASM headers, and leaves the installed package unchanged.
 
 On the known GNU Linux CI host, npm receives `--libc=glibc`. Only the final
 bundling phase uses `CFRM_BUNDLER_BINDING` to select the installed GNU Rolldown

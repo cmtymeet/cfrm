@@ -1,0 +1,138 @@
+# Peer reservation proof foundation
+
+**Uncompiled, unintegrated source candidate.** No browser proof or operator
+acceptance interoperability result is claimed for this circuit. The measured
+account-state runs use a different relation. Production private accounting and
+protected release remain disabled.
+
+This separate Noir relation proves membership of one Prepared (`1`) or Active
+(`2`) obligation in an already accepted account state. Settled (`3`) never
+qualifies. Both roles use this same circuit. Its public statement is for the
+authenticated peer channel only; it must never accompany a named operator
+request. Balance, total reserved credit, other slots, map positions/paths and
+the owner's secret remain private.
+
+## Wire and verification contract
+
+```
+{ version: 1,
+  statement: {
+    community, owner, peer, role, nonce, group, contactPolicyDigest,
+    historyDigest, phase, accountPolicyDigest, stateVersion,
+    stateCommitment, challenge, presentationBinding
+  },
+  proofScope: { circuitDigest, verifyingKeyDigest },
+  proof, accountAcceptance }
+```
+
+Every digest/identifier/challenge is a canonical array of 32 bytes. Proof is
+lowercase hex. Role `0` is the original initiator's outgoing obligation; role
+`1` is the original recipient's incoming obligation. `accountAcceptance` is
+the original signed Rust `AccountAcceptance`, including its entire named
+statement and account-circuit proof scope. That account scope differs from the
+new peer circuit scope. The peer learns the certificate's metadata as well as
+the selected tuple; no certificate or presentation goes into its named update.
+
+The relation has **355 public field elements**, ordered exactly as `main.nr`
+and `publicInputValues()`. Arbitrary bytes32 use two big-endian u128 limbs;
+state and presentation field outputs require canonical BN254 encoding.
+
+`createPeerVerifier()` receives locally pinned peer and account circuit/VK
+digests, exact compiled circuit/VK bytes and the host's actual
+`verifyAccountAcceptance(certificate)` adapter. This adapter must invoke
+`cfrm::verify_account_acceptance` under a pinned operator key and return `true`
+only on success. There is no default verifier. An arbitrary success callback
+would bypass that required trust boundary; it is not a supported substitute.
+
+For each verification the host supplies:
+
+- `expected`: all statement fields except `presentationBinding`, obtained from
+  the authenticated cmsg exchange and the selected accepted state/version;
+- `now`, the current trusted time, the common `accountPolicy`, and the trusted
+  `enrollmentRoot` for the acceptance's common checkpoint.
+
+The verifier checks the signature, scope, accepted commitment/version,
+community/owner, exact policy digest and current validity, expected tuple and
+fresh challenge, then verifies the actual proof under the pinned peer VK. The
+host must bound transport JSON before parsing and must never accept expected
+values or verifier implementations supplied by the presenting peer.
+
+The success result does **not** consume the challenge or authorize data. cmsg
+must durably consume the exact challenge, check current closure/consent/nonce
+and its own current Active slot, and enforce the gate on every protected path.
+Prepared evidence cannot authorize release. Caller state must retain challenge
+use across device restore; repeat proof verification is deliberately stateless.
+
+## Relation and context limits
+
+The circuit repeats only the existing account encodings (secret, event, state,
+slot, leaf and internal-node transcripts). JavaScript uses the existing
+`account-state` hashes and `AccountWitness` maps. Poseidon2 itself comes from
+the same pinned upstream library; no permutation or sponge is implemented here.
+Selected membership authenticates the complete indexed leaf, including both
+links, against a 32-level path. Linked-map ordering and count induction come
+from the **accepted account-state relation**. Arbitrary imported roots or an
+operator certificate for an unproved state do not establish that invariant.
+
+The new fixed-length presentation hash is:
+
+```
+Poseidon2_fixed_10(
+  ASCII("cfrm.peer-reservation.v1"), 1,
+  ownerSecretHi128, ownerSecretLo128, acceptedState, selectedSlotHash,
+  challengeHi128, challengeLo128, historyHi128, historyLo128)
+```
+
+It binds the challenge and history to the same secret and selected slot.
+**History is presentation context:** the current account-state obligation does
+not contain `historyDigest`. The owner can prepare a new valid presentation
+under a different context; the verifying host must independently require the
+actual cmsg history. This proof does not authenticate the contents or evolution
+of an opaque history hash, or prove original recipient consent by itself.
+
+A new challenge does not make a historical account certificate current. Current
+local cmsg gates and monotonic slot transitions remain necessary. Malicious
+operator forks require an independently consistent ledger/log assumption or
+additional witnessing; this membership proof cannot establish non-equivocation.
+
+## Bounded integration entrypoints
+
+Compile-only, from `experiments/private-accounting` on the existing Crow worker
+after its normal locked dependency installation:
+
+```sh
+timeout 600 node peer-reservation/compile.mjs "$PEER_ARTIFACT_DIR"
+```
+
+The helper uses the existing pinned Noir WASM compiler and file-manager
+resolver, writing compiled JSON and source hashes to the mandatory separate
+output directory. Only pinned `p2hash` is a dependency; no SHA or signature
+circuit is required. It does not fetch setup or prove. Subsequent circuit stats
+and VK also need a **separate peer artifact namespace**. No existing build
+selector has been changed.
+
+`runPeerReservationContract()` in `browser.mjs` is callable once the host has:
+
+1. Compiled/pinned this relation and initialized the existing BB API with pinned
+   public setup sufficient for it.
+2. Retained an actual accepted live `AccountWitness`, selected event, and the
+   real signed operator acceptance for that exact version/state.
+3. Provided independent cmsg context/current policy and a real Rust acceptance
+   verifier adapter, with a peer-generated challenge.
+
+It creates one real proof and bounded adversarial witness/host cases, checks
+public-input equality and repeats the positive proof after negatives. The
+result contains peer-only presentation data; real deployments must not log it.
+`createPeerVerifier()` is portable to Node for independent public-proof
+verification using separately loaded/pinned artifacts and the real adapter.
+
+Integration still needs new driver IPC to obtain the real acceptance **while
+the browser retains its private opening**, plus browser/Rust and independent
+Node acceptance-verification adapters. Existing account browser results do not
+retain openings outside the page. Do not serialize witnesses to the driver or
+replace this step with a synthetic acceptance. No shared build, browser driver,
+account transition or ledger source was changed by this foundation.
+
+See [the reservation protocol](../../../docs/private-reservation-protocol.md)
+for the two-sided release and durable recovery requirements. Circuit cost,
+actual browser memory and proof latency for this relation are unmeasured.

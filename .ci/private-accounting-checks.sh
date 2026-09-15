@@ -27,6 +27,12 @@ case "${CHECK_PHASE:-full}" in
   compile)
     test "$ACCOUNTING_MODE" = account-state-v1
     artifact_dir="$artifact_dir-compile"
+    export CIRCUIT_PACKAGE="${CIRCUIT_PACKAGE:-account-state}"
+    case "$CIRCUIT_PACKAGE" in
+      account-state) ;;
+      peer-reservation) artifact_dir="$artifact_dir-peer-reservation" ;;
+      *) printf 'Unknown circuit package\n'; exit 2 ;;
+    esac
     ;;
   ledger)
     test "$ACCOUNTING_MODE" = account-state-v1
@@ -85,6 +91,11 @@ timeout 600 npm ci --libc=glibc --ignore-scripts --no-audit --no-fund \
   2>&1 | tee "$artifact_dir/npm-install.log"
 if test "${CHECK_PHASE:-full}" = compile; then
   export ACCOUNTING_ARTIFACT_DIR="$artifact_dir"
+  if test "$CIRCUIT_PACKAGE" = peer-reservation; then
+    timeout 600 node peer-reservation/compile.mjs "$artifact_dir" \
+      2>&1 | tee "$artifact_dir/circuit-compile.log"
+    exit 0
+  fi
   timeout 600 node --input-type=module <<'JS' 2>&1 | tee "$artifact_dir/circuit-compile.log"
 import { compile, createFileManager } from '@noir-lang/noir_wasm';
 import { writeFile, readFile } from 'node:fs/promises';

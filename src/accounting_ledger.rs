@@ -153,7 +153,10 @@ fn check_pending(
     if statement.settlement_marker != [0; 32] {
         let exists: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM cfrm_accounts_markers WHERE owner=?1 AND marker=?2)",
-            params![statement.owner.as_slice(), statement.settlement_marker.as_slice()],
+            params![
+                statement.owner.as_slice(),
+                statement.settlement_marker.as_slice()
+            ],
             |row| row.get(0),
         )?;
         if exists {
@@ -341,7 +344,15 @@ impl<V: AccountProofVerifier> AccountLedger<V> {
             transaction.commit()?;
             return Ok(result);
         }
-        check_pending(&transaction, request, &root_key, grant, authorization, &self.policy, now)?;
+        check_pending(
+            &transaction,
+            request,
+            &root_key,
+            grant,
+            authorization,
+            &self.policy,
+            now,
+        )?;
         // Release every SQLite lock before invoking an external or slow
         // verifier. Other owners and competing devices can commit meanwhile.
         transaction.rollback()?;
@@ -351,9 +362,7 @@ impl<V: AccountProofVerifier> AccountLedger<V> {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let completed = clock();
         check_time(completed, clock_floor(&transaction)?.max(now))?;
-        if completed >= grant.expires_at
-            || completed >= authorization.expires_at
-        {
+        if completed >= grant.expires_at || completed >= authorization.expires_at {
             return Err(Error::Expired);
         }
         verify_admission(grant, &self.trust, completed)?;
@@ -373,7 +382,15 @@ impl<V: AccountProofVerifier> AccountLedger<V> {
             transaction.commit()?;
             return Ok(result);
         }
-        check_pending(&transaction, request, &root_key, grant, authorization, &self.policy, completed)?;
+        check_pending(
+            &transaction,
+            request,
+            &root_key,
+            grant,
+            authorization,
+            &self.policy,
+            completed,
+        )?;
         let mut acceptance = AccountAcceptance {
             statement: statement.clone(),
             request_id: request.request_id,

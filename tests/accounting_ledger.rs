@@ -64,7 +64,15 @@ impl AccountProofVerifier for BlockedVerifier {
 fn blocked_verifier() -> (BlockedVerifier, Receiver<()>, Sender<()>) {
     let (entered, observed) = mpsc::channel();
     let (release, resume) = mpsc::channel();
-    (BlockedVerifier { inner: StorageOnlyVerifier::default(), entered, release: resume }, observed, release)
+    (
+        BlockedVerifier {
+            inner: StorageOnlyVerifier::default(),
+            entered,
+            release: resume,
+        },
+        observed,
+        release,
+    )
 }
 
 fn fr(n: u8) -> [u8; 32] {
@@ -89,11 +97,7 @@ fn policy() -> AccountLedgerPolicy {
         checkpoint_period_seconds: 1000,
     }
 }
-fn open<V: AccountProofVerifier>(
-    path: &Path,
-    fixture: &Fixture,
-    verifier: V,
-) -> AccountLedger<V> {
+fn open<V: AccountProofVerifier>(path: &Path, fixture: &Fixture, verifier: V) -> AccountLedger<V> {
     AccountLedger::open(
         path,
         fixture.trust.clone(),
@@ -300,7 +304,11 @@ fn blocked_proof_allows_another_owner_to_commit_and_rechecks_shared_clock_floor(
         let other_grant = f.grant(8, &f.device);
         let other_authorization = f.authorize(8, &f.device);
         let mut other = genesis(&f);
-        other.statement.owner = B64.decode(other_grant.member_id.as_bytes()).unwrap().try_into().unwrap();
+        other.statement.owner = B64
+            .decode(other_grant.member_id.as_bytes())
+            .unwrap()
+            .try_into()
+            .unwrap();
         other.request_id = [21; 32];
         sign(&mut other, &f.device);
         std::thread::scope(|scope| {
@@ -313,7 +321,10 @@ fn blocked_proof_allows_another_owner_to_commit_and_rechecks_shared_clock_floor(
             let accepted = fast.apply(&other_grant, &other_authorization, &other, || other_time);
             release.send(()).unwrap();
             let resumed = worker.join().unwrap();
-            assert!(accepted.is_ok(), "another owner's commit must precede verifier release");
+            assert!(
+                accepted.is_ok(),
+                "another owner's commit must precede verifier release"
+            );
             if other_time == 120 {
                 assert!(resumed.is_ok());
             } else {
@@ -321,8 +332,12 @@ fn blocked_proof_allows_another_owner_to_commit_and_rechecks_shared_clock_floor(
             }
         });
         let db = Connection::open(&path).unwrap();
-        assert_eq!(db.query_row("SELECT count(*) FROM cfrm_accounts", [], |row| row.get::<_, i64>(0)).unwrap(),
-            if other_time == 120 { 2 } else { 1 });
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM cfrm_accounts", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            if other_time == 120 { 2 } else { 1 }
+        );
     }
 }
 
@@ -355,12 +370,27 @@ fn successor_losing_during_verification_cannot_commit_its_marker_or_response() {
             assert_eq!(resumed, Err(Error::Replay));
         });
         let db = Connection::open(&path).unwrap();
-        let (state, request): (Vec<u8>, Vec<u8>) = db.query_row(
-            "SELECT state,latest_request FROM cfrm_accounts", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        let (state, request): (Vec<u8>, Vec<u8>) = db
+            .query_row(
+                "SELECT state,latest_request FROM cfrm_accounts",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(state, winning.statement.next_state);
         assert_eq!(request, winning.request_id);
-        assert_eq!(db.query_row("SELECT marker FROM cfrm_accounts_markers", [], |row| row.get::<_, Vec<u8>>(0)).unwrap(), fr(16));
-        assert_eq!(db.query_row("SELECT count(*) FROM cfrm_accounts_requests", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(
+            db.query_row("SELECT marker FROM cfrm_accounts_markers", [], |row| row
+                .get::<_, Vec<u8>>(0))
+                .unwrap(),
+            fr(16)
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM cfrm_accounts_requests", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
     }
 }
 
@@ -381,7 +411,8 @@ fn concurrently_cached_request_bypasses_original_expiry_but_requires_live_author
         let mut slow = open(&path, &f, verifier);
         let now = AtomicU64::new(130);
         std::thread::scope(|scope| {
-            let worker = scope.spawn(|| slow.apply(&g, &a, &request, || now.load(Ordering::SeqCst)));
+            let worker =
+                scope.spawn(|| slow.apply(&g, &a, &request, || now.load(Ordering::SeqCst)));
             entered.recv_timeout(Duration::from_secs(10)).unwrap();
             let accepted = fast.apply(&g, &a, &request, || 130);
             now.store(completed, Ordering::SeqCst);
@@ -395,8 +426,20 @@ fn concurrently_cached_request_bypasses_original_expiry_but_requires_live_author
             }
         });
         let db = Connection::open(&path).unwrap();
-        assert_eq!(db.query_row("SELECT count(*) FROM cfrm_accounts_requests", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
-        assert_eq!(db.query_row("SELECT count(*) FROM cfrm_accounts_markers", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM cfrm_accounts_requests", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM cfrm_accounts_markers", [], |row| row
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            1
+        );
     }
 }
 
@@ -407,20 +450,42 @@ fn checkpoint_slot_expiry_during_verification_cannot_commit() {
     let f = Fixture::new();
     let mut configured = policy();
     configured.checkpoint_period_seconds = 150;
-    let mut ledger = AccountLedger::open(&path, f.trust.clone(), configured,
-        StorageOnlyVerifier::default(), SigningKey::from_bytes(&[9; 32])).unwrap();
+    let mut ledger = AccountLedger::open(
+        &path,
+        f.trust.clone(),
+        configured,
+        StorageOnlyVerifier::default(),
+        SigningKey::from_bytes(&[9; 32]),
+    )
+    .unwrap();
     ledger.admit_checkpoint(0, fr(8)).unwrap();
     let times = [120, 120, 150];
     let index = Cell::new(0);
-    let result = ledger.apply(&f.grant(7, &f.device), &f.authorize(7, &f.device), &genesis(&f), || {
-        let i = index.get();
-        index.set(i + 1);
-        times[i]
-    });
+    let result = ledger.apply(
+        &f.grant(7, &f.device),
+        &f.authorize(7, &f.device),
+        &genesis(&f),
+        || {
+            let i = index.get();
+            index.set(i + 1);
+            times[i]
+        },
+    );
     assert_eq!(result, Err(Error::Expired));
     let db = Connection::open(&path).unwrap();
-    assert_eq!(db.query_row("SELECT count(*) FROM cfrm_accounts", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
-    assert_eq!(db.query_row("SELECT clock_floor FROM cfrm_accounts_config", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM cfrm_accounts", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row("SELECT clock_floor FROM cfrm_accounts_config", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0
+    );
 }
 
 #[test]

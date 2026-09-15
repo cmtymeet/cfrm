@@ -57,15 +57,18 @@ all replicas and a malicious operator's inconsistent histories remain limits.
 
 ## Executed evidence
 
-At `f68f6f3f30f3804d87a8f0a7b5c453cbd7d3db7c`, Crow run 9/43 passed nine new
+At `524956395852696c1d3f6ac4bd57ef5f8652c261`, Crow run 9/48 passed thirteen
 storage/authorization tests, the existing 21 native and 55 historical JavaScript
 tests, and the portable Wasm check. The new suite exercises strict signatures,
 device continuity, expired exact retry, checkpoint and proof rejection, time
 changes during verification, challenge-bound recovery, and rollback after marker
 insertion. Two separate child processes race independent requests against the
 same database; one successor commits and its exact response survives reopening.
+Channel-driven tests hold one verifier while another owner opens the database,
+publishes a checkpoint and commits. Competing state updates, shared clock
+advancement and expiry are rechecked when the paused verifier finishes.
 
-Those nine tests deliberately use a synthetic verifier to isolate the storage
+Those tests deliberately use a synthetic verifier to isolate the storage
 contract. They are not cryptographic acceptance evidence. The separate browser
 account-state integration invokes the real pinned proof backend through
 [account_ledger_fixture](../examples/account_ledger_fixture.rs); its execution

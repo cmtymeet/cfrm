@@ -60,8 +60,8 @@ export async function verifyResults(result, enrolled) {
     };
     check(accept(valid), 'fixture accepts verified successor atomically');
     check(!accept(valid), 'fixture rejects same receipt replay');
-    check(!accept({ ...valid }), 'fixture rejects parallel device stale successor');
-    check(proofs[0].marker !== proofs[1].marker, 'different named owners have independent markers');
+    check(!accept({ ...valid }), 'fixture rejects cloned proof against consumed state');
+    check(proofs[0].marker !== proofs[1].marker, 'different scenario proofs expose different markers');
     return { checks, elapsedMs: performance.now() - started, verifierTarget: OPTIONS.verifierTarget,
       witnessReceived: false, genesis: 'synthetic pre-reserved opening; production genesis is not implemented' };
   } finally { await api.destroy(); }

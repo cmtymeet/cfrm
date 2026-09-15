@@ -63,7 +63,9 @@ try {
   const backendDir = dirname(fileURLToPath(import.meta.resolve('@aztec/bb.js')));
   const browserAssets = resolve(backendDir, '..', 'browser', 'barretenberg_wasm', 'fetch_code', 'browser');
   const wasm = [];
-  for (const name of ['barretenberg', 'barretenberg-threads']) {
+  // This contract requires an isolated SharedArrayBuffer-capable browser. The
+  // pinned loader chooses this binary even when desiredThreads is one.
+  for (const name of ['barretenberg-threads']) {
     // bb.js 5.0.0 ships both browser binaries as generated data-URL modules;
     // dest/node ships only the shared-memory .wasm.gz. Read the exact published
     // literal without evaluating it or changing the installed package.

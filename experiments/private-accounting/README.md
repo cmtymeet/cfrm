@@ -106,12 +106,16 @@ records source/size/SHA-256, and checks those pins on subsequent builds.
 Initial hash bootstrap trusts the official HTTPS source; it is not a ceremony
 audit. The circuit, verification key and setup files are served locally to the
 browser. Automatic backend SRS downloading is disabled.
-The installed backend's WASM files are also copied, hashed and served locally;
+The selected backend WASM binary is also copied, hashed and served locally;
 an explicit `wasmPath` avoids its default embedded `data:` URL fetch.
 The exact 5.0.0 package embeds both browser binaries in
 [generated JavaScript literals](https://github.com/AztecProtocol/aztec-packages/blob/v5.0.0/barretenberg/ts/scripts/browser_postprocess.sh);
-the build extracts those literals without evaluating them, validates their
-encoding and WASM headers, and leaves the installed package unchanged.
+the build extracts the selected literal without evaluating it, validates its
+encoding and WASM header, and leaves the installed package unchanged. The
+[pinned loader](https://github.com/AztecProtocol/aztec-packages/blob/v5.0.0/barretenberg/ts/src/barretenberg_wasm/index.ts)
+selects the shared-memory binary when SharedArrayBuffer and cross-origin
+isolation are available, even with one prover thread. This experiment requires
+those browser capabilities; it does not establish support in every browser.
 
 On the known GNU Linux CI host, npm receives `--libc=glibc`. Only the final
 bundling phase uses `CFRM_BUNDLER_BINDING` to select the installed GNU Rolldown
@@ -153,6 +157,11 @@ using its local pinned verification key and the Rust fixture's independently
 verified checkpoint. It receives no witness. It also tests changed public
 inputs/proof bytes and replay/stale-successor rejection in the synthetic ledger.
 Both verifiers use Barretenberg, so this is not implementation diversity.
+The cloned-proof rejection is a synchronous in-memory compare-and-swap test,
+not concurrent independent device proving or distributed ledger testing. The
+two proofs concern different random events. Their unequal markers, and a
+separate same-nonce/opposite-owner hash comparison, do not measure traffic
+unlinkability or constitute two proofs of one shared event.
 
 Evidence records source/setup hashes, browser/runtime versions, witness/proving/
 verification times, proof bytes, served/download bytes, and failure stages.
@@ -160,6 +169,36 @@ The two proofs share a warmed backend; they are not repeated measurements of
 one identical circuit witness. End-of-run JS heap is only a sample. **Peak WASM
 memory, peak process memory, iOS and Android performance remain unmeasured.**
 No result is a pass until the actual CI run succeeds.
+
+### Measured baseline: Crow 9/37
+
+On 2026-09-15, source `310bd23086f0978b5ffe3f7492dcb28e30786eb9`
+passed **40 browser checks and 19 independent-verifier checks**, using
+Chrome `152.0.7977.64` on Linux x86-64 and Node `v24.19.0`.
+The source and artifact hashes were verified before recording this result.
+Artifacts are retained under
+`/workspaces/component-releases/cfrm/310bd23086f0978b5ffe3f7492dcb28e30786eb9/private-accounting`.
+
+| Measurement | Outgoing peer answer | Incoming owner closure |
+| --- | ---: | ---: |
+| Witness generation | 42.15 ms | 34.68 ms |
+| Browser proving | 18.10 s | 17.62 s |
+| Browser verification, including recomputed key | 4.63 s | 4.56 s |
+| Binary proof, excluding public inputs/JSON | 14,656 bytes | 14,656 bytes |
+
+The circuit had 200,214 gates, padded to 262,144. Both proofs used the same
+warmed, one-thread backend. The harness recorded 52,414,774 loaded bytes and
+no forbidden requests or browser errors. End-of-run JS heap was 65,131,076
+bytes; actual peak WASM/process memory was unmeasured, with a 2 GiB WASM cap.
+The independent verifier's complete timed check batch took 144.81 ms; that
+number is not a per-proof verification benchmark.
+
+This baseline downloaded both browser binaries. Its browser verification also
+[recomputed the verification key each time](https://github.com/AztecProtocol/aztec-packages/blob/v5.0.0/barretenberg/ts/src/barretenberg/backend.ts).
+The follow-up source selects one binary and uses the hash-checked build key
+with `UltraHonkVerifierBackend`; its measurements must come from a new CI run.
+This desktop synthetic result proves neither mobile feasibility, full private
+accounting, distributed concurrency nor anonymity against traffic observation.
 
 ## Required work beyond this spike
 

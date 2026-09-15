@@ -1,8 +1,9 @@
 # Private reciprocal accounting: backend decision review
 
-**2026-09-15 — proposed proof contract, not an implemented protocol or audit.**
+**2026-09-15 — required proof contract and bounded browser evidence; no full protocol or audit.**
 Inspected cfrm `2c4fa47` and the current cmsg identity, receipt and directional
-Inbox work. No local builds or proving benchmarks were run for this review.
+Inbox work for the initial review. The later isolated spike was executed on Crow;
+no local builds or proving benchmarks were run on the workstation.
 Eligibility remains an external verified input; provider selection is outside scope.
 
 ## What exists and what is missing
@@ -183,48 +184,50 @@ our constraints. Pin the exact compiler/backend pair, zero-knowledge mode,
 setup parameters and verifier; review transitive licensing before adoption.
 [Browser API](https://barretenberg.aztec.network/docs/how_to_guides/on-the-browser/)
 
-## Recommended next executable spike
-
-**Start with a root-bound delegated accounting-receipt experiment using an
-existing proof-friendly signature and Noir/Barretenberg**, isolated from production
-`resolve_private`. This tests the hidden-owner/receipt equality bottleneck with
-available browser proving machinery before building a complete controller.
+## Executable spike and next decision
 
 The [isolated executable spike](../experiments/private-accounting/README.md)
-now selects Noir's built-in P-256 verifier and browser WebCrypto signing for
-the smallest supported signature integration. It retains the explicit delegated
-authority boundary; successful compilation or proving must still be evidenced
-by CI, and does not complete this acceptance relation.
+uses Noir's built-in P-256 verifier and browser WebCrypto signing, with a real
+Ed25519-verified root/device enrollment bridge. Crow **9/37** passed at source
+`310bd23086f0978b5ffe3f7492dcb28e30786eb9`: 40 browser checks and 19 independent
+verifier checks. Two 14,656-byte binary proofs took 18.10 and 17.62 seconds to
+generate in desktop Chromium with one prover thread. Browser verification took
+4.63 and 4.56 seconds including key recomputation; the follow-up source reuses
+the pinned key. The circuit contains 200,214 gates. Loaded bytes were 52.4 MB;
+peak WASM/process memory and mobile performance remain unmeasured. The 2 GiB
+configured ceiling is not measured usage.
 
-1. Add an experimental public enrollment binding from the actual cmsg
-   root-authorized device to an accounting public key. Verify every original
-   signature in Rust and derive/pin a common enrollment root; an operator-provided
-   Merkle root alone is insufficient. Signature checks establish authenticity,
-   not roster completeness or consistent views: those need the checkpoint/log
-   assumption above. Enforce unique root-owned registrations. No per-member roots.
-   This is an explicit protocol extension. It cannot silently convert existing
-   Ed25519 receipts: cmsg must itself authenticate the versioned accounting
-   receipt and its exact peer/nonce/role fields under that delegated authority.
+This proves only settlement of one synthetic, already-reserved obligation.
+It tests root-owned delegated authority and hidden owner/receipt equality,
+including genuinely signed wrong-signer, wrong-owner and backdated receipts.
+The replay fixture uses one synchronous in-memory state comparison; it does
+not demonstrate distributed concurrency. The two proofs use different events;
+a separate hash comparison covers same-nonce markers under opposite owners.
+The batched synthetic report provides no traffic-correlation evidence.
+The explicit delegated-key extension does not verify unchanged cmsg Ed25519
+receipts, and production `resolve_private` remains unsupported.
 
-2. Prove a single owner-state successor and a single consumed receipt: private
-   signer enrollment membership, correct owner/peer equality, preserved pending
-   record, exact declared settlement and owner-specific replay marker. Use a
-   clearly synthetic fixed transition only for measuring the mechanism; retain
-   every unresolved production policy parameter as unresolved.
+The next bounded checks are:
 
-3. Run a real browser prover and an independent verifier on existing CI.
-   Test changed hidden owner, receipt/prover substitution, self-receipt,
-   opposite-role reuse, backdating, stale successor, parallel devices,
-   duplicate genesis and altered public input. Exercise an issuer-created
-   enrollment substitution against root verification. Fail every unsupported
-   production operation; never substitute a successful mock verifier.
+1. Measure browser process memory and repeat the unchanged relation with only
+   the selected WASM binary and a pinned verification key. Separate linear WASM
+   allocation from sampled process memory; neither end-of-run JS heap nor a
+   configured ceiling establishes peak use. Measure target mobile browsers
+   before accepting an all-platform feasibility claim.
 
-4. Capture exact source/setup hashes, cold/warm proving and verification time,
-   proof and download bytes, peak memory, thread settings and browser/device
-   versions. Label desktop-only results accordingly; iOS and Android remain
-   unknown until measured. Inspect both named envelopes for shared identifiers.
+2. Replace the synthetic pre-reserved starting state with one root-owned,
+   durable genesis and an authorized reservation transition. Test recovery and
+   independent competing successors. Keep the public policy explicit and
+   reject unspecified parameters; do not choose product balances or deadlines.
+   This still leaves dual reservation/private peer acknowledgment, concurrent
+   pending maps and historical eligibility/block provenance to implement.
 
-Continue only if the authenticated-key bridge, constraints and browser resources
-are convincing. Otherwise measure the unchanged-Ed25519/zkVM route as a separate
-experiment; do not trade away owner binding or send witnesses to a server to
-make a benchmark pass. None of these routes yet constitutes the full backend.
+3. Bind the versioned delegated receipt authority in cmsg itself, preserving
+   exact member/pair/nonce/group/role semantics. Inspect both named operator
+   envelopes for shared identifiers. Keep production admission fail-closed
+   until the full relation, release/recovery composition and adversarial
+   integration tests exist.
+
+If browser resources are unsuitable, measure the unchanged-Ed25519/zkVM route
+separately; never remove owner binding or upload a private witness to make a
+benchmark pass. None of these routes yet constitutes the full backend.

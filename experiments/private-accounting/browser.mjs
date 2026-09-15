@@ -1,5 +1,5 @@
 import { Noir } from '@noir-lang/noir_js';
-import { Barretenberg, BackendType, UltraHonkBackend } from '@aztec/bb.js';
+import { Barretenberg, BackendType, UltraHonkBackend, UltraHonkVerifierBackend } from '@aztec/bb.js';
 import { COMMUNITY_NAME, OPTIONS, hex, unhex, cat, zeros, random, sha, be, memberBytes,
   secretHash, leaf, node, state, receiptBytes, marker, canonicalSignature } from './common.mjs';
 
@@ -18,7 +18,7 @@ const circuitInput = value => Object.fromEntries(Object.entries(value).map(([k, 
   v instanceof Uint8Array ? arr(v) : Array.isArray(v) ? v.map(arr) : typeof v === 'number' ? String(v) : v]));
 
 async function main() {
-  assert(crossOriginIsolated, 'browser is isolated for explicit WASM memory configuration');
+  assert(crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined', 'browser supports isolated shared WASM memory');
   const manifest = await (await fetch('/manifest.json')).json();
   const rawCircuit = await bytes('/circuit.json');
   assert(hex(await sha(rawCircuit)) === manifest.circuitSha256, 'browser circuit matches build manifest');
@@ -49,7 +49,7 @@ async function main() {
     ['altered accounting owner', e => { e[1].admission.memberId = e[2].admission.memberId; }],
     ['issuer signature cannot authorize member device', e => { e[1].authorization.signature = e[1].admission.signature; }],
     ['changed registered state secret', e => { e[1].secretHash = e[2].secretHash; }],
-    ['duplicate genesis identity', e => { e[1] = structuredClone(e[0]); }],
+    ['duplicate enrolled permanent identity', e => { e[1] = structuredClone(e[0]); }],
   ]) {
     const altered = structuredClone(entries); mutate(altered);
     assert(!(await post({ action: 'verify', entries: altered })).ok, label);
@@ -116,11 +116,16 @@ async function main() {
     assert(rejected, label);
   }
   stage('initialize-browser-prover');
+  assert(manifest.wasm?.length === 1 && manifest.wasm[0].name === 'barretenberg-threads.wasm', 'manifest pins only the selected shared-memory binary');
   for (const record of manifest.wasm) {
     const data = await bytes('/' + record.name);
     assert(data.length === record.bytes && hex(await sha(data)) === record.sha256, 'pinned same-origin WASM ' + record.name);
   }
+  const verificationKey = await bytes('/vk.bin');
+  assert(hex(await sha(verificationKey)) === manifest.vkSha256, 'browser verifier uses the pinned build verification key');
   const api = await Barretenberg.new({ backend: BackendType.WasmWorker, threads: 1, skipSrsInit: true,
+    // The pinned browser loader inserts '-threads' when shared memory is
+    // available, resolving this base path to /barretenberg-threads.wasm.
     wasmPath: '/barretenberg.wasm', memory: { initial: 2048, maximum: 32768 } });
   try {
     const setup = {};
@@ -131,6 +136,7 @@ async function main() {
     }
     await api.srsInitSrs({ pointsBuf: setup['g1.dat'], numPoints: manifest.numPoints, g2Point: setup['g2.dat'] });
     const backend = new UltraHonkBackend(circuit.bytecode, api);
+    const verifier = new UltraHonkVerifierBackend(api);
     for (let i = 0; i < positives.length; i++) {
       stage('prove-' + i);
       const executionStart = performance.now();
@@ -140,17 +146,17 @@ async function main() {
       const proof = await backend.generateProof(executed.witness, OPTIONS);
       const provingMs = performance.now() - provingStart;
       const verificationStart = performance.now();
-      assert(await backend.verifyProof(proof, OPTIONS), 'browser accepts valid role ' + i);
+      assert(await verifier.verifyProof({ ...proof, verificationKey }, OPTIONS), 'browser accepts valid role ' + i);
       const verificationMs = performance.now() - verificationStart;
       // These public values are the only proof data crossing the browser boundary.
       metrics.proofs.push({ proof: hex(proof.proof), publicInputs: proof.publicInputs,
-        proofBytes: proof.proof.length, witnessMs, provingMs, verificationMs });
+        proofBytes: proof.proof.length, witnessMs, provingMs, verificationMs, verificationIncludesKeyGeneration: false });
     }
     const one = positives[0];
     const reverse = await marker(community, holders[1].secret, holders[1].id, holders[0].id, one.nonce);
-    assert(hex(reverse) !== hex(one.spent_marker), 'same event has independent public markers across owners');
+    assert(hex(reverse) !== hex(one.spent_marker), 'hash comparison: same nonce and opposite owners have different markers');
     metrics.endJsHeapBytes = performance.memory?.usedJSHeapSize ?? null;
-    metrics.memoryMeasurement = 'JS heap at end; peak WASM/process memory is unmeasured';
+    metrics.memoryMeasurement = 'Local JS heap at end; exact peak WASM memory is unknown; see harness process-family samples separately';
     metrics.downloadBytes = performance.getEntriesByType('resource').reduce((n, r) => n + r.encodedBodySize, 0);
     metrics.manifest = manifest;
     return { ok: true, ...metrics };

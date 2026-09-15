@@ -1,6 +1,6 @@
 // Dedicated bounded CI runner. Existing Chromium, temporary loopback server.
 import { createServer } from 'node:http';
-import { readFile, writeFile, mkdtemp, rm } from 'node:fs/promises';
+import { readFile, readdir, writeFile, mkdtemp, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { resolve, join, extname, sep } from 'node:path';
@@ -14,12 +14,187 @@ const root = resolve('dist');
 const profile = await mkdtemp(join(tmpdir(), 'cfrm-accounting-'));
 const evidence = { source: process.env.CI_COMMIT_SHA, runtime: process.version, ok: false,
   fixtureRequests: 0, forbiddenRequests: [], loadedBytes: 0, browserErrors: [] };
-let fixture, browser, socket, origin, fixtureWaiting, fixtureTimer, deadline;
+let fixture, browser, socket, origin, fixtureWaiting, fixtureTimer, deadline, browserMemory;
 let fixtureOutput = '', fixtureStderr = '', stderr = '', enrolled;
 const pending = new Map(); let nextId = 1;
 const loaded = new Set();
 const closed = new WeakMap();
 function captureClose(child) { closed.set(child, new Promise(resolve => child.once('close', resolve))); return child; }
+
+// Read only our Chromium PID and descendants discovered through its thread
+// children files. Never enumerate /proc globally or retain process contents.
+function sampleBrowserMemory(child) {
+  const intervalMs = 200, sampleDeadlineMs = 750, maximumDurationMs = 600_000;
+  const maximumProcesses = 128, maximumThreads = 256, maximumReads = 2048;
+  const began = performance.now();
+  const report = {
+    measurement: 'sampled Chromium process-family PSS estimate; not exact Wasm peak',
+    scope: 'Chromium and discovered descendants only; native fixture and Node verifier excluded',
+    source: '/proc/PID/smaps_rollup; VmRSS fallback from /proc/PID/status',
+    sampleIntervalMs: intervalMs, sampleDeadlineMs, maximumDurationMs,
+    maximumProcesses, maximumThreadsPerProcess: maximumThreads, maximumReadsPerSample: maximumReads,
+    sampleCount: 0, completePssSamples: 0, completeRssSamples: 0, incompleteSamples: 0,
+    peakSampledPssBytes: null, peakSampledRssBytes: null, peakPartialPssBytes: null,
+    rssFallbackProcessSamples: 0, maximumObservedProcesses: 0,
+    maximumSampleDurationMs: 0, maximumSampleGapMs: 0, elapsedMs: 0, incomplete: false, reasons: {},
+    rssCaveat: 'Summed RSS double-counts shared pages; it is not interchangeable with PSS.',
+    samplingCaveat: 'Sequential reads are not atomic; between-sample peaks and children reparented before discovery can be missed.',
+  };
+  let stopping = false, finished = false, rootIdentity, activeAbort, pauseTimer, wake, lastSampleStarted;
+  const known = new Map();
+  const reason = name => { report.reasons[name] = (report.reasons[name] ?? 0) + 1; };
+  const same = (a, b) => a && b && a.pid === b.pid && a.started === b.started;
+  const live = () => child?.pid && child.exitCode === null && child.signalCode === null;
+  const peak = (previous, value) => previous === null ? value : Math.max(previous, value);
+
+  async function sample() {
+    const beganSample = performance.now();
+    if (lastSampleStarted !== undefined) report.maximumSampleGapMs = Math.max(report.maximumSampleGapMs, beganSample - lastSampleStarted);
+    lastSampleStarted = beganSample;
+    report.sampleCount += 1;
+    let reads = 0, incomplete = false, familyIncomplete = false;
+    let pssTotal = 0, rssTotal = 0, measured = 0, pssCount = 0, rssCount = 0;
+    activeAbort = new AbortController();
+    const abort = activeAbort;
+    const timeout = setTimeout(() => abort.abort(), sampleDeadlineMs);
+    const miss = name => { incomplete = true; familyIncomplete = true; reason(name); };
+    async function read(path) {
+      if (abort.signal.aborted || ++reads > maximumReads) throw new Error('sample bound');
+      const text = await readFile(path, { encoding: 'utf8', signal: abort.signal });
+      if (text.length > 65_536) throw new Error('proc file bound');
+      return text;
+    }
+    async function identity(pid) {
+      const text = await read(`/proc/${pid}/stat`);
+      // comm may contain spaces or parentheses; fields after its last ')' have
+      // stable positions: state(3), ppid(4), starttime(22).
+      const end = text.lastIndexOf(')');
+      const fields = text.slice(end + 1).trim().split(/\s+/);
+      if (end < 0 || Number(text.slice(0, text.indexOf(' '))) !== pid
+          || fields.length < 20 || !/^\d+$/.test(fields[19])) throw new Error('proc identity');
+      const parent = Number(fields[1]);
+      if (!Number.isSafeInteger(parent) || parent < 0) throw new Error('proc parent');
+      return { pid, parent, started: fields[19] };
+    }
+    const kb = (text, name) => {
+      const match = text.match(new RegExp(`^${name}:\\s+(\\d+) kB$`, 'm'));
+      if (!match) return null;
+      const bytes = Number(match[1]) * 1024;
+      return Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : null;
+    };
+    try {
+      if (!live()) { stopping = true; return; }
+      const currentRoot = await identity(child.pid);
+      if (!live() || currentRoot.parent !== process.pid || (rootIdentity && !same(rootIdentity, currentRoot))) {
+        miss('root-identity-changed'); stopping = true; return;
+      }
+      rootIdentity ??= currentRoot;
+      known.set(currentRoot.pid, currentRoot);
+      const queue = [currentRoot, ...Array.from(known.values()).filter(p => p.pid !== currentRoot.pid)];
+      const visited = new Set();
+      while (queue.length && !abort.signal.aborted) {
+        if (visited.size >= maximumProcesses) { miss('process-limit'); break; }
+        const expected = queue.shift();
+        if (visited.has(expected.pid)) continue;
+        visited.add(expected.pid);
+        let current;
+        try { current = await identity(expected.pid); }
+        catch { known.delete(expected.pid); miss('process-exited-or-unreadable'); continue; }
+        if (!same(current, expected)) { known.delete(expected.pid); miss('pid-reuse'); continue; }
+        try {
+          // Children can be forked by any Chromium thread, not only its leader.
+          if (abort.signal.aborted || ++reads > maximumReads) throw new Error('sample bound');
+          const threads = (await readdir(`/proc/${current.pid}/task`)).filter(t => /^\d+$/.test(t));
+          if (threads.length > maximumThreads) miss('thread-limit');
+          const children = new Set();
+          for (const tid of threads.slice(0, maximumThreads)) {
+            try {
+              for (const childPid of (await read(`/proc/${current.pid}/task/${tid}/children`)).trim().split(/\s+/)) {
+                if (/^[1-9]\d*$/.test(childPid)) children.add(Number(childPid));
+              }
+            } catch { miss('children-unreadable'); }
+            if (abort.signal.aborted || reads >= maximumReads) break;
+          }
+          if (!same(current, await identity(current.pid))) { miss('parent-identity-changed'); continue; }
+          for (const pid of children) {
+            if (!Number.isSafeInteger(pid) || visited.has(pid)) continue;
+            if (known.size >= maximumProcesses && !known.has(pid)) { miss('process-limit'); break; }
+            try {
+              const descendant = await identity(pid);
+              if (descendant.parent !== current.pid || BigInt(descendant.started) < BigInt(current.started)
+                  || !same(current, await identity(current.pid))) { miss('child-identity-changed'); continue; }
+              known.set(pid, descendant); queue.push(descendant);
+            } catch { miss('child-exited-or-unreadable'); }
+          }
+        } catch { miss('discovery-incomplete'); }
+        let pss = null, rss = null;
+        try {
+          const rollup = await read(`/proc/${current.pid}/smaps_rollup`);
+          pss = kb(rollup, 'Pss'); rss = kb(rollup, 'Rss');
+        } catch { /* Restricted procfs can still expose VmRSS below. */ }
+        if (pss === null || rss === null) {
+          report.rssFallbackProcessSamples += 1;
+          try { rss = kb(await read(`/proc/${current.pid}/status`), 'VmRSS'); }
+          catch { /* Count this sample as incomplete; never substitute zero. */ }
+        }
+        try {
+          if (!same(current, await identity(current.pid))) { miss('memory-identity-changed'); continue; }
+        } catch { miss('process-exited-during-read'); continue; }
+        measured += 1;
+        if (pss !== null) { pssTotal += pss; pssCount += 1; }
+        if (rss !== null) { rssTotal += rss; rssCount += 1; }
+        if (rss === null) miss('memory-measurement-incomplete');
+        else if (pss === null) { incomplete = true; reason('pss-unavailable-rss-fallback'); }
+      }
+      if (abort.signal.aborted || reads >= maximumReads) miss('sample-deadline-or-read-limit');
+      report.maximumObservedProcesses = Math.max(report.maximumObservedProcesses, measured);
+      if (pssCount) report.peakPartialPssBytes = peak(report.peakPartialPssBytes, pssTotal);
+      if (!incomplete && measured > 0 && pssCount === measured) {
+        report.completePssSamples += 1;
+        report.peakSampledPssBytes = peak(report.peakSampledPssBytes, pssTotal);
+      }
+      if (measured > 0 && rssCount === measured && !familyIncomplete) {
+        report.completeRssSamples += 1;
+        report.peakSampledRssBytes = peak(report.peakSampledRssBytes, rssTotal);
+      }
+    } catch { miss(abort.signal.aborted ? 'sample-deadline' : 'sample-unavailable'); }
+    finally {
+      clearTimeout(timeout); activeAbort = undefined;
+      report.maximumSampleDurationMs = Math.max(report.maximumSampleDurationMs, performance.now() - beganSample);
+      if (!measured) miss('no-process-measurement');
+      if (incomplete) { report.incompleteSamples += 1; report.incomplete = true; }
+    }
+  }
+
+  const done = (async () => {
+    if (process.platform !== 'linux' || !child?.pid) { report.incomplete = true; reason('linux-procfs-unavailable'); return; }
+    while (!stopping && live()) {
+      if (performance.now() - began >= maximumDurationMs) { report.incomplete = true; reason('sampler-duration-limit'); break; }
+      const started = performance.now();
+      await sample();
+      if (stopping || !live()) break;
+      await new Promise(resolve => {
+        wake = resolve;
+        pauseTimer = setTimeout(resolve, Math.max(1, intervalMs - (performance.now() - started)));
+      });
+      clearTimeout(pauseTimer); wake = undefined;
+    }
+  })().catch(() => { report.incomplete = true; reason('sampler-unavailable'); });
+  return {
+    report,
+    async stop() {
+      if (finished) return report;
+      stopping = true; activeAbort?.abort(); clearTimeout(pauseTimer); wake?.();
+      await done;
+      if (finished) return report;
+      finished = true;
+      known.clear(); report.elapsedMs = performance.now() - began;
+      if (!report.completePssSamples) report.incomplete = true;
+      return report;
+    },
+  };
+}
+
 function failFixture(error) { fixtureWaiting?.reject(error); fixtureWaiting = undefined; clearTimeout(fixtureTimer); }
 function publicCommand(value) {
   const exact = (v, keys) => v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).sort().join(',') === [...keys].sort().join(',');
@@ -101,6 +276,8 @@ try {
   { stdio: ['ignore', 'ignore', 'pipe'] }));
   let launchError; browser.on('error', error => { launchError = error; });
   browser.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8000); });
+  browserMemory = sampleBrowserMemory(browser);
+  evidence.browserProcessMemory = browserMemory.report;
   let port;
   for (let attempt = 0; attempt < 300; attempt++) {
     if (launchError) throw launchError;
@@ -140,6 +317,7 @@ try {
   evidence.contract = result.result.value;
   if (!evidence.contract.ok || evidence.contract.proofs?.length !== 2 || evidence.contract.checks.length < 30) throw new Error('Browser proof contract incomplete');
   if (evidence.forbiddenRequests.length) throw new Error('Unlisted browser network traffic');
+  await browserMemory.stop();
   socket.close(); await stop(browser);
   // A separate runtime verifies local pinned VK + public inputs, never witnesses.
   const { verifyResults } = await import('./verify.mjs');
@@ -157,6 +335,8 @@ try {
 } finally {
   clearTimeout(deadline); failFixture(new Error('Fixture closed')); socket?.close();
   const cleanupErrors = [];
+  try { await browserMemory?.stop(); }
+  catch { cleanupErrors.push('Browser memory sampler cleanup failed'); }
   for (const child of [browser, fixture]) { try { await stop(child); } catch (error) { cleanupErrors.push(String(error)); } }
   try { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
   catch (error) { cleanupErrors.push(String(error)); }

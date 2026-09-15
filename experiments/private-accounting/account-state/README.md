@@ -94,6 +94,17 @@ and `close` runs use fresh actual cmsg fixtures and the same compiled circuit/VK
 Setup hashes live in `account-state/setup-lock.json`; only explicit initial
 `RESOLVE_SETUP=1` may create it. No browser witness is sent for remote proving.
 
+BB5's [compressed setup initializer](https://github.com/AztecProtocol/aztec-packages/blob/v5.0.0/barretenberg/cpp/src/barretenberg/bbapi/bbapi_srs.cpp)
+requires complete [131,072-point /4MiB chunks](https://github.com/AztecProtocol/aztec-packages/blob/v5.0.0/barretenberg/cpp/src/barretenberg/srs/factories/bn254_g1_chunk_hashes.hpp).
+The build rounds the required padded circuit size plus one upward to this chunk
+size, retaining the existing 524,288-point floor. A padded size of 524,288 thus
+uses 655,360 points (20MiB compressed), not a power-of-two doubling. The
+[memory CRS factory](https://github.com/AztecProtocol/aztec-packages/blob/v5.0.0/barretenberg/cpp/src/barretenberg/srs/factories/mem_bn254_crs_factory.cpp)
+requires enough points for the requested degree. `public/circuit-stats.json`
+is written before setup initialization so a later failure retains circuit
+identity, gate counts and the setup plan. A new lock is written only after the
+backend accepts the setup; run9/45's rejected partial-chunk lock is not a pin.
+
 The browser proves both genesis states, both initial reservations and activations,
 and an additional outgoing obligation for the recipient. Answer then proves
 outgoing settlement and incoming settlement with the archived sender acknowledgment.

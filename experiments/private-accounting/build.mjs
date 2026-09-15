@@ -38,11 +38,28 @@ try {
   const stats = await api.circuitStats({ circuit: { name: 'private-accounting-spike', bytecode, verificationKey: new Uint8Array() },
     includeGatesPerOpcode: false,
     settings: { ipaAccumulation: false, oracleHashType: 'poseidon2', disableZk: false, optimizedSolidityVerifier: false } });
-  const numPoints = Math.max(2 ** 19, Number(stats.numGatesDyadic) + 1);
-  if (!Number.isSafeInteger(numPoints) || numPoints > 2 ** 20 + 1) throw new Error('Circuit exceeds bounded setup spike');
+  // Persist compiler/backend evidence before setup can fail. These fields are
+  // public circuit metadata; there is no witness or successful-proof claim.
+  const circuitStats = { version: 1, accountingMode, hashScheme, compiler: '1.0.0-beta.26', backend: '5.0.0',
+    circuitSha256: hash(await readFile('public/circuit.json')), stats };
+  await writeFile('public/circuit-stats.json', JSON.stringify(circuitStats, null, 2) + '\n');
+  const requiredPoints = Number(stats.numGatesDyadic) + 1;
+  if (!Number.isSafeInteger(requiredPoints) || requiredPoints <= 1 || requiredPoints > 2 ** 20 + 1) throw new Error('Circuit exceeds bounded setup spike');
+  // BB5 verifies each complete compressed G1 chunk against its in-binary hash.
+  // bn254_g1_chunk_hashes.hpp pins 2^17 points ×32 bytes =4MiB per chunk.
+  // bbapi_srs.cpp requires chunk alignment; the memory CRS factory requires
+  // sufficient points, not a power-of-two count. Preserve the measured floor.
+  const pointsPerChunk = 2 ** 17;
+  const numPoints = Math.max(2 ** 19, Math.ceil(requiredPoints / pointsPerChunk) * pointsPerChunk);
+  // Existing circuit bound plus at most one alignment chunk: <=36MiB G1.
+  const maximumSetupPoints = 9 * pointsPerChunk;
+  if (numPoints > maximumSetupPoints) throw new Error('Rounded setup exceeds resource bound');
+  circuitStats.setupPlan = { requiredPoints, pointsPerChunk, numPoints, maximumSetupPoints, compressedG1Bytes: numPoints * 32 };
+  await writeFile('public/circuit-stats.json', JSON.stringify(circuitStats, null, 2) + '\n');
   let locked;
   try { locked = JSON.parse(await readFile(setupLockPath, 'utf8')); }
   catch (error) { if (error.code !== 'ENOENT' || process.env.RESOLVE_SETUP !== '1') throw error; }
+  if (locked && locked.numPoints !== numPoints) throw new Error('Setup size differs from pinned circuit');
   const specs = [
     { name: 'g1.dat', url: 'https://crs.aztec-cdn.foundation/g1_compressed.dat', bytes: numPoints * 32, range: true },
     { name: 'g2.dat', url: 'https://crs.aztec-cdn.foundation/g2.dat', bytes: 128, range: false },
@@ -69,10 +86,10 @@ try {
     setup.push(record); await writeFile('public/setup/' + spec.name, bytes);
   }
   const setupLock = { version: 1, numPoints, files: setup };
-  if (!locked) await writeFile(setupLockPath, JSON.stringify(setupLock, null, 2) + '\n');
-  else if (locked.numPoints !== numPoints) throw new Error('Setup size differs from pinned circuit');
   await api.srsInitSrs({ pointsBuf: new Uint8Array(await readFile('public/setup/g1.dat')),
     numPoints, g2Point: new Uint8Array(await readFile('public/setup/g2.dat')) });
+  // Do not create a candidate pin for a setup the actual backend rejects.
+  if (!locked) await writeFile(setupLockPath, JSON.stringify(setupLock, null, 2) + '\n');
   const vk = await new UltraHonkBackend(compiled.program.bytecode, api).getVerificationKey(OPTIONS);
   await writeFile('public/vk.bin', vk);
   // The upstream browser bundle defaults to fetching an embedded data: URL.
@@ -99,7 +116,7 @@ try {
   const manifest = { version: 1, compiler: '1.0.0-beta.26', backend: '5.0.0', verifierTarget: OPTIONS.verifierTarget,
     hashScheme, accountingMode, accountPolicy, poseidonSource: hashScheme === POSEIDON_SCHEME ? POSEIDON_SOURCE : null,
     circuitSha256: hash(await readFile('public/circuit.json')), vkSha256: hash(vk),
-    circuitSourceSha256: hash(await readFile(circuitDir + '/src/main.nr')), numPoints, setup, wasm,
+    circuitSourceSha256: hash(await readFile(circuitDir + '/src/main.nr')), requiredPoints, pointsPerChunk, numPoints, setup, wasm,
     ...(accountingMode === 'account-state-v1' ? { indexedSourceSha256: hash(await readFile(circuitDir + '/src/indexed.nr')) } : {}),
     compileAndSetupMs: performance.now() - started, stats, threads: 1, maximumWasmBytes: 32768 * 65536 };
   await writeFile('public/manifest.json', JSON.stringify(manifest, null, 2));

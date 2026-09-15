@@ -47,7 +47,7 @@ capture() {
   test ! -f setup-lock.json || cp setup-lock.json "$artifact_dir/setup-lock.json"
   test ! -f account-state/setup-lock.json || cp account-state/setup-lock.json "$artifact_dir/account-state-setup-lock.json"
   test ! -f ../../Cargo.lock || cp ../../Cargo.lock "$artifact_dir/cfrm-Cargo.lock"
-  for name in manifest.json circuit.json; do
+  for name in manifest.json circuit.json circuit-stats.json; do
     test ! -f "public/$name" || cp "public/$name" "$artifact_dir/$name"
   done
   if test -d dist; then tar --create --file "$artifact_dir/browser-package.tar" dist; fi

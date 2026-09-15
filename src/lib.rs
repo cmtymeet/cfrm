@@ -9,6 +9,8 @@ pub mod allocation;
 pub mod permits;
 #[cfg(all(feature = "permit-issuer", not(target_arch = "wasm32")))]
 pub mod permit_issuer;
+#[cfg(all(feature = "browser", target_arch = "wasm32"))]
+pub mod browser;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {

@@ -1,6 +1,6 @@
 # Account-state foundation
 
-**Source candidate; runtime evidence pending.** This extends the separately
+**Experimental foundation with actual Answer-flow evidence.** This extends the separately
 measured settlement experiments. It does not enable production
 `AllocationLedger::resolve_private`, choose product credit rules, or establish
 complete private release, recovery or mobile feasibility.
@@ -127,8 +127,30 @@ The common checkpoint and accepted test times come from retained native data,
 not browser claims. Both proof verifiers use Barretenberg; this is not independent
 implementation diversity.
 
+## Executed evidence
+
+Crow 9/46 at `79708b7251e6a983b3478bd9530068778940a436` passed nine actual
+Answer-flow browser proofs, 85 browser checks and 19 independently pinned Node
+checks. The Rust integration then exposed a SQLite lock timeout during slow
+verifier startup. The corrected ledger passed 13 native storage/authorization
+tests on Crow 9/48 at `524956395852696c1d3f6ac4bd57ef5f8652c261`.
+
+Crow 9/49 at that corrected source reused the hash-verified run 46 public proofs
+and retained native enrollment. All 19 real Rust integration checks passed,
+including independent-process contention, durable acceptance, process exit
+after commit, expired exact retry and malformed-proof rejection. This replay
+did not rerun the browser or receive private witnesses. Close validation is
+recorded separately when complete.
+
+The circuit has 319,319 gates, padded to 524,288. Run 46 measured 26.4–27.4 seconds
+per proof, 14,656 bytes per proof and 46,599,980 loaded bytes. Sampled Chromium-family
+PSS reached 1,192,218,624 bytes (~1.11 GiB), with 1352/1379 complete samples and a
+maximum 238 ms sampling gap. This is a desktop, single-thread measurement;
+sampling can miss peaks and shared-host load affects timing. The cost prevents
+claiming readiness for the intended browser experience. Mobile viability and
+exact peak Wasm memory remain unverified.
+
 Full refill/reward/disapproval, private matching Active proofs, recovery/opening
 synchronization, authenticated policy/key migration, block/expiry/consent proofs,
 operator consistency and target-browser measurements remain outside this
-foundation. New source has no passing-runtime or audit claim until the recorded
-Crow checks actually succeed.
+foundation. This evidence is neither a complete release nor a cryptographic audit.

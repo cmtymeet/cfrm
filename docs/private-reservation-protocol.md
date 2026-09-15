@@ -1,13 +1,14 @@
 # Private reservation protocol: bounded proposal
 
-**2026-09-15 — design proposal only; not implemented, audited or enabled for production.**
+**2026-09-15 — partially implemented experimental protocol; not audited or enabled for production.**
 
 This extends the requirements in [Private reciprocal accounting](private-accounting.md)
-and the [isolated settlement experiment](../experiments/private-accounting/README.md).
-The experiment proves settlement from a synthetic, already-reserved single slot.
-It does not implement the genesis, reservation maps, peer proofs, durable ledger
-or release protocol described here. Production `resolve_private` remains
-`UnsupportedCapability`.
+and the [account-state foundation](../experiments/private-accounting/account-state/README.md).
+The foundation implements proved empty genesis, both reservation maps, activation,
+settlement and a [durable Rust ledger](account-ledger.md). Its Answer flow has
+passed with real cmsg signatures and browser proofs. Peer presentations,
+protected release, complete recovery and numerical policy are still separate
+work. Production `resolve_private` remains `UnsupportedCapability`.
 
 The proposal keeps one named account per permanent community member while hiding
 its contacts. Both outgoing and incoming obligations affect that same account.
@@ -58,16 +59,16 @@ identity of the original event. Accounting-key rotation must preserve this
 continuity rather than create a fresh marker namespace.
 
 Transitions prove the actual previous opening, all changed paths, conservation,
-integer bounds and preservation of untouched paths. The single-slot experiment
-does not supply these constraints. Map sizes and proof costs need measurement;
-this document does not choose a one-contact capacity limit for the product.
+integer bounds and preservation of untouched paths. The account-state foundation
+implements those constraints with depth32 indexed maps. Its measured browser
+cost is a release constraint; this document selects no product contact limit.
 
 ## Operator envelopes
 
 The following field sets define the proposed separation of information. They
-are not a frozen serialization format. Canonical encoding, field bounds,
-signature domains, transcript binding and exact proof backend must be pinned
-before implementing a wire protocol.
+describe the information boundary. The implemented named-owner formats have
+versioned canonical encodings in [`src/accounting.rs`](../src/accounting.rs).
+Peer presentation and protected-release formats remain experimental.
 
 | Envelope | Fields visible to the operator |
 | --- | --- |
@@ -204,16 +205,15 @@ closure may resolve its incoming obligation. A self-declared incoming answer
 cannot earn a reward without the additional authenticated acknowledgment event
 selected by the response protocol. No reward formula is chosen here.
 
-The current experiment verifies a delegated P-256 receipt format. It does not
-verify unchanged cmsg Ed25519 `ContactResolution` objects. Production needs either
-the full existing verifier inside the proof or an explicit, versioned cmsg
-delegation/receipt extension preserving member, event, role and group authority.
-Receipt renewal must preserve the original settlement identity.
+The account-state experiment verifies cmsg's versioned delegated P-256 receipt
+and original-sender acknowledgment. Native cmsg verifies the underlying
+Ed25519 contact event before preparing this extension; the circuit does not
+independently parse that original event. Historical verification preserves the
+original settlement identity and retained authority.
 
-Before enabling this proposal, implement and adversarially test lifetime genesis,
-both obligation maps, exact conservation and unchanged paths, all phase changes,
-the peer proof relation, historical authorization, archived settlement, durable
-CAS/retry/recovery and the cmsg release composition. Test both named envelopes
-together for shared identifiers, and race independent successors against the
-real durable ledger. Measure the complete relation in target browsers. Existing
-single-slot proofs and synthetic retry fixtures do not establish these results.
+Before enabling this protocol, complete and adversarially test peer proofs,
+archived settlement and client recovery, block/consent history and cmsg release
+composition. Preserve the existing real-proof ledger race/retry tests. Test
+both named envelopes together for shared identifiers, and resolve the full
+relation's browser cost. Desktop experiment results do not establish acceptable
+latency or memory use on target mobile browsers.

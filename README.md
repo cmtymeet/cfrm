@@ -6,7 +6,7 @@ The [Rust core](docs/rust-core.md) provides a member-authenticated multi-device 
 
 The earlier certified onion rendezvous library and numerical experiments remain available separately. cfrm composes with externally operated eligibility verification and [cmsg](https://github.com/corbet-labs/cmsg) for private text messaging. No reports or adjudication are part of its model. It is not a complete deployed community service.
 
-The core/browser CI runs on GHA, with Crow as the fallback. Browser permit validation passed 35 actual Chromium checks at `1e9cea8`; the later roster bindings have their own pending validation.
+The core/browser CI runs on GHA, with Crow as the fallback. At `3bc89d0`, 63 actual Chromium checks passed for the roster and blind permits, alongside 21 Rust and 55 historical JavaScript tests and portable Wasm checking. These results do not establish the missing private reciprocal-budget proof.
 
 Run the historical simulations on Node 24 with no dependencies:
 

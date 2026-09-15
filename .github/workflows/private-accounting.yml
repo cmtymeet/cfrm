@@ -1,0 +1,41 @@
+name: Private accounting browser experiment
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  experiment:
+    # Hosted Actions is primary; the matching Crow workflow is its fallback.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: '2'
+      RUST_TEST_THREADS: '2'
+      CI_COMMIT_SHA: ${{ github.sha }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      ARTIFACT_ROOT: ${{ runner.temp }}/accounting-evidence
+      RESOLVE_DEPENDENCIES: '0'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Prepare runner tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup update stable --no-self-update
+          rustup default stable
+          printf 'BROWSER_BIN=%s\n' "$(command -v google-chrome || command -v chromium)" >> "$GITHUB_ENV"
+      - name: Run the shared experiment
+        run: bash .ci/private-accounting-checks.sh
+      - name: Retain exact setup and proof evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: private-accounting-experiment
+          path: ${{ runner.temp }}/accounting-evidence
+          if-no-files-found: warn
+          retention-days: 7

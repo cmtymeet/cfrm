@@ -1,0 +1,155 @@
+import { Noir } from '@noir-lang/noir_js';
+import { Barretenberg, BackendType, UltraHonkBackend } from '@aztec/bb.js';
+import { COMMUNITY_NAME, OPTIONS, hex, unhex, cat, zeros, random, sha, be, memberBytes,
+  secretHash, leaf, node, state, receiptBytes, marker, canonicalSignature } from './common.mjs';
+
+const metrics = { checks: [], stages: [], proofs: [], userAgent: navigator.userAgent, threads: 1,
+  maximumWasmBytes: 32768 * 65536, endJsHeapBytes: null, peakWasmBytes: null };
+window.accountingProgress = metrics;
+const assert = (condition, label) => { if (!condition) throw new Error(label); metrics.checks.push(label); };
+const stage = name => { metrics.stages.push({ name, atMs: performance.now() }); };
+const post = async command => {
+  const response = await fetch('/fixture', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(command) });
+  if (!response.ok) throw new Error('Public enrollment bridge failed'); return response.json();
+};
+const bytes = async url => new Uint8Array(await (await fetch(url)).arrayBuffer());
+const arr = value => Array.from(value);
+const circuitInput = value => Object.fromEntries(Object.entries(value).map(([k, v]) => [k,
+  v instanceof Uint8Array ? arr(v) : Array.isArray(v) ? v.map(arr) : typeof v === 'number' ? String(v) : v]));
+
+async function main() {
+  assert(crossOriginIsolated, 'browser is isolated for explicit WASM memory configuration');
+  const manifest = await (await fetch('/manifest.json')).json();
+  const rawCircuit = await bytes('/circuit.json');
+  assert(hex(await sha(rawCircuit)) === manifest.circuitSha256, 'browser circuit matches build manifest');
+  const circuit = JSON.parse(new TextDecoder().decode(rawCircuit));
+  const community = await sha(new TextEncoder().encode(COMMUNITY_NAME));
+  const holders = [];
+  for (let i = 0; i < 4; i++) {
+    const key = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+    const raw = new Uint8Array(await crypto.subtle.exportKey('raw', key.publicKey));
+    const secret = random();
+    holders.push({ key, raw: raw.slice(1), secret, secretHash: await secretHash(community, secret) });
+  }
+  stage('public-root-delegation');
+  const enrolled = await post({ action: 'enroll', keys: holders.map(h => ({ accountKey: hex(h.raw), secretHash: hex(h.secretHash) })) });
+  assert(enrolled.ok, 'real Ed25519 root/device delegation accepted by Rust');
+  const config = enrolled.value;
+  assert(config.community === hex(community), 'community digest matches pinned scope');
+  const entries = config.entries;
+  for (let i = 0; i < 4; i++) {
+    holders[i].id = memberBytes(entries[i].admission.memberId);
+    assert(entries[i].accountKey === hex(holders[i].raw) && entries[i].secretHash === hex(holders[i].secretHash), 'enrollment binds requested public accounting authority ' + i);
+  }
+  const leaves = await Promise.all(entries.map((e, i) => leaf(community, holders[i].id, holders[i].raw, holders[i].secretHash, e.issuedAt, e.expiresAt)));
+  const branches = [await node(leaves[0], leaves[1]), await node(leaves[2], leaves[3])];
+  assert(hex(await node(...branches)) === config.root, 'common root reconstructed from original verified enrollments');
+  for (const [label, mutate] of [
+    ['altered delegated key', e => { e[1].accountKey = e[2].accountKey; }],
+    ['altered accounting owner', e => { e[1].admission.memberId = e[2].admission.memberId; }],
+    ['issuer signature cannot authorize member device', e => { e[1].authorization.signature = e[1].admission.signature; }],
+    ['changed registered state secret', e => { e[1].secretHash = e[2].secretHash; }],
+    ['duplicate genesis identity', e => { e[1] = structuredClone(e[0]); }],
+  ]) {
+    const altered = structuredClone(entries); mutate(altered);
+    assert(!(await post({ action: 'verify', entries: altered })).ok, label);
+  }
+  const path = i => [leaves[i ^ 1], branches[(i >> 1) ^ 1]];
+  const noir = new Noir(circuit);
+  async function witness(ownerIndex, peerIndex, role, kind, issued = 100) {
+    const owner = holders[ownerIndex], peer = holders[peerIndex];
+    const nonce = random(), group = random(), oldBlind = random(), newBlind = random();
+    const balance = 7, reserved = 2; // Synthetic opening, not product policy.
+    const responder = role === 0 ? peer : owner, other = role === 0 ? owner : peer;
+    const signature = canonicalSignature(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, responder.key.privateKey,
+      receiptBytes(community, responder.id, other.id, nonce, group, kind, issued)));
+    return {
+      community, enrollment_root: unhex(config.root), owner: owner.id,
+      old_state: await state(community, owner.id, owner.secretHash, balance, role, peer.id, nonce, group, reserved, oldBlind),
+      new_state: await state(community, owner.id, owner.secretHash, balance + reserved, 0, zeros(), zeros(), zeros(), 0, newBlind),
+      spent_marker: await marker(community, owner.secret, owner.id, peer.id, nonce), now: 100,
+      owner_secret: owner.secret, owner_key: owner.raw, owner_start: 80, owner_end: 1000, owner_path: path(ownerIndex), owner_index: ownerIndex,
+      peer: peer.id, peer_key: peer.raw, peer_secret_hash: peer.secretHash, peer_start: 80, peer_end: 1000, peer_path: path(peerIndex), peer_index: peerIndex,
+      balance, reserved, role, nonce, group, old_blind: oldBlind, new_blind: newBlind, kind, issued, signature,
+    };
+  }
+  const valid = await witness(0, 1, 0, 1);
+  stage('witness-negatives');
+  const positives = [valid, await witness(1, 0, 1, 2)];
+  const negative = [
+    ['wrong hidden receipt owner', v => { v.peer = holders[2].id; }],
+    ['wrong hidden enrolled key', v => { v.peer_key = holders[2].raw; }],
+    ['borrowed membership path', v => { v.peer_path = path(2); v.peer_index = 2; }],
+    ['wrong owner accounting secret', v => { v.owner_secret = holders[2].secret; }],
+    ['self receipt', v => { v.peer = v.owner; }],
+    ['opposite role reuse', v => { v.role = 1; }],
+    ['changed nonce', v => { v.nonce[0] ^= 1; }],
+    ['changed group', v => { v.group[0] ^= 1; }],
+    ['changed signed decision', v => { v.kind = 2; }],
+    ['forged receipt signature', v => { v.signature[0] ^= 1; }],
+    ['inflated reserve', v => { v.reserved += 1; }],
+    ['changed old state', v => { v.old_state[0] ^= 1; }],
+    ['changed successor', v => { v.new_state[0] ^= 1; }],
+    ['changed replay marker', v => { v.spent_marker[0] ^= 1; }],
+    ['expired enrollment', v => { v.now = 1000; }],
+  ];
+  for (const [label, mutate] of negative) {
+    const value = structuredClone(valid); mutate(value);
+    let rejected = false; try { await noir.execute(circuitInput(value)); } catch { rejected = true; }
+    assert(rejected, label);
+  }
+  for (const [label, value] of [
+    ['genuinely signed backdated receipt', await witness(0, 1, 0, 1, 79)],
+    ['recipient self-declared answer', await witness(1, 0, 1, 1)],
+  ]) {
+    let rejected = false; try { await noir.execute(circuitInput(value)); } catch { rejected = true; }
+    assert(rejected, label);
+  }
+  for (const [label, signer, credited] of [
+    ['valid signature from a different enrolled member', holders[2], holders[0]],
+    ['valid receipt credits a different owner', holders[1], holders[2]],
+  ]) {
+    const value = structuredClone(valid);
+    value.signature = canonicalSignature(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, signer.key.privateKey,
+      receiptBytes(community, signer.id, credited.id, value.nonce, value.group, value.kind, value.issued)));
+    let rejected = false; try { await noir.execute(circuitInput(value)); } catch { rejected = true; }
+    assert(rejected, label);
+  }
+  stage('initialize-browser-prover');
+  const api = await Barretenberg.new({ backend: BackendType.WasmWorker, threads: 1, skipSrsInit: true,
+    memory: { initial: 2048, maximum: 32768 } });
+  try {
+    const setup = {};
+    for (const record of manifest.setup) {
+      const data = await bytes('/setup/' + record.name);
+      assert(data.length === record.bytes && hex(await sha(data)) === record.sha256, 'pinned local setup ' + record.name);
+      setup[record.name] = data;
+    }
+    await api.srsInitSrs({ pointsBuf: setup['g1.dat'], numPoints: manifest.numPoints, g2Point: setup['g2.dat'] });
+    const backend = new UltraHonkBackend(circuit.bytecode, api);
+    for (let i = 0; i < positives.length; i++) {
+      stage('prove-' + i);
+      const executionStart = performance.now();
+      const executed = await noir.execute(circuitInput(positives[i]));
+      const witnessMs = performance.now() - executionStart;
+      const provingStart = performance.now();
+      const proof = await backend.generateProof(executed.witness, OPTIONS);
+      const provingMs = performance.now() - provingStart;
+      const verificationStart = performance.now();
+      assert(await backend.verifyProof(proof, OPTIONS), 'browser accepts valid role ' + i);
+      const verificationMs = performance.now() - verificationStart;
+      // These public values are the only proof data crossing the browser boundary.
+      metrics.proofs.push({ proof: hex(proof.proof), publicInputs: proof.publicInputs,
+        proofBytes: proof.proof.length, witnessMs, provingMs, verificationMs });
+    }
+    const one = positives[0];
+    const reverse = await marker(community, holders[1].secret, holders[1].id, holders[0].id, one.nonce);
+    assert(hex(reverse) !== hex(one.spent_marker), 'same event has independent public markers across owners');
+    metrics.endJsHeapBytes = performance.memory?.usedJSHeapSize ?? null;
+    metrics.memoryMeasurement = 'JS heap at end; peak WASM/process memory is unmeasured';
+    metrics.downloadBytes = performance.getEntriesByType('resource').reduce((n, r) => n + r.encodedBodySize, 0);
+    metrics.manifest = manifest;
+    return { ok: true, ...metrics };
+  } finally { await api.destroy(); }
+}
+window.accountingDone = main().catch(error => ({ ok: false, ...metrics, error: String(error?.stack ?? error) }));

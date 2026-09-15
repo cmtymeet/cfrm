@@ -9,6 +9,17 @@ on:
         options:
           - sha256-v1
           - poseidon2-bn254-fixed-128-v1
+      accounting_mode:
+        description: Versioned proof relation
+        type: choice
+        default: settlement-v1
+        options:
+          - settlement-v1
+          - account-state-v1
+      account_policy_json:
+        description: Explicit seven-field AccountPolicy JSON, required for account-state-v1
+        type: string
+        default: ''
 permissions:
   contents: read
 jobs:
@@ -24,6 +35,8 @@ jobs:
       ARTIFACT_ROOT: ${{ runner.temp }}/accounting-evidence
       RESOLVE_DEPENDENCIES: '0'
       HASH_SCHEME: ${{ inputs.hash_scheme }}
+      ACCOUNTING_MODE: ${{ inputs.accounting_mode }}
+      ACCOUNT_POLICY_JSON: ${{ inputs.account_policy_json }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -38,6 +51,19 @@ jobs:
           rustup update stable --no-self-update
           rustup default stable
           printf 'BROWSER_BIN=%s\n' "$(command -v google-chrome || command -v chromium)" >> "$GITHUB_ENV"
+      - name: Stage pinned cmsg source
+        if: inputs.accounting_mode == 'account-state-v1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision="$(sed -n 's/^revision = "\([0-9a-f]\{40\}\)"$/\1/p' .ci/archives.toml)"
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          git init "$RUNNER_TEMP/cmsg-source"
+          git -C "$RUNNER_TEMP/cmsg-source" fetch --depth 1 https://github.com/corbet-labs/cmsg.git "$revision"
+          test "$(git -C "$RUNNER_TEMP/cmsg-source" rev-parse FETCH_HEAD)" = "$revision"
+          git -C "$RUNNER_TEMP/cmsg-source" archive "$revision" > "$RUNNER_TEMP/cmsg-source.tar"
+          printf 'CMSG_SOURCE_ARCHIVE=%s\n' "$RUNNER_TEMP/cmsg-source.tar" >> "$GITHUB_ENV"
+          printf 'CMSG_SOURCE_SHA256=%s\n' "$(sha256sum "$RUNNER_TEMP/cmsg-source.tar" | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
       - name: Run the shared experiment
         run: bash .ci/private-accounting-checks.sh
       - name: Retain exact setup and proof evidence

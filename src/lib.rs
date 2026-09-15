@@ -1,10 +1,10 @@
 //! Authenticated public presence and private introduction-allocation boundaries.
 //! No profile content, messages, recipient IDs or relationship map belong here.
 
-pub mod admission;
 pub mod accounting;
 #[cfg(feature = "sqlite")]
 pub mod accounting_ledger;
+pub mod admission;
 #[cfg(feature = "sqlite")]
 pub mod allocation;
 pub mod board;

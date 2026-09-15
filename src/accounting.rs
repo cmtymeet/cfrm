@@ -4,16 +4,17 @@
 //! supply the pinned, complete proof verifier; signatures alone do not establish
 //! a valid hidden account transition.
 
-use crate::{admission::{decode, signature, MAX_INTEGER}, Error};
+use crate::{
+    admission::{decode, signature, MAX_INTEGER},
+    Error,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// BN254 scalar modulus, big endian. Commitments must be canonical field values.
 const MODULUS: [u8; 32] = [
-    0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29,
-    0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
-    0x28, 0x33, 0xe8, 0x48, 0x79, 0xb9, 0x70, 0x91,
-    0x43, 0xe1, 0xf5, 0x93, 0xf0, 0x00, 0x00, 0x01,
+    0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
+    0x28, 0x33, 0xe8, 0x48, 0x79, 0xb9, 0x70, 0x91, 0x43, 0xe1, 0xf5, 0x93, 0xf0, 0x00, 0x00, 0x01,
 ];
 
 pub(crate) fn field(value: &[u8; 32], nonzero: bool) -> Result<(), Error> {
@@ -43,7 +44,8 @@ impl AccountPolicy {
             || self.incoming_reservation == 0
             || self.outgoing_reservation > self.maximum_available
             || self.incoming_reservation > self.maximum_available
-            || self.policy_revision == 0 || self.policy_revision > MAX_INTEGER
+            || self.policy_revision == 0
+            || self.policy_revision > MAX_INTEGER
             || self.policy_valid_from == 0
             || self.policy_valid_from >= self.policy_valid_until
             || self.policy_valid_until > MAX_INTEGER
@@ -54,11 +56,19 @@ impl AccountPolicy {
     }
 
     pub(crate) fn append(&self, bytes: &mut Vec<u8>) {
-        for value in [self.initial_credit, self.maximum_available,
-            self.outgoing_reservation, self.incoming_reservation] {
+        for value in [
+            self.initial_credit,
+            self.maximum_available,
+            self.outgoing_reservation,
+            self.incoming_reservation,
+        ] {
             bytes.extend_from_slice(&value.to_be_bytes());
         }
-        for value in [self.policy_revision, self.policy_valid_from, self.policy_valid_until] {
+        for value in [
+            self.policy_revision,
+            self.policy_valid_from,
+            self.policy_valid_until,
+        ] {
             bytes.extend_from_slice(&value.to_be_bytes());
         }
     }
@@ -99,12 +109,15 @@ pub fn statement_bytes(value: &AccountStatement) -> Result<Vec<u8>, Error> {
     field(&value.previous_state, !value.genesis)?;
     field(&value.next_state, true)?;
     field(&value.settlement_marker, false)?;
-    if value.protocol_version != 1 || value.now < value.policy.policy_valid_from
+    if value.protocol_version != 1
+        || value.now < value.policy.policy_valid_from
         || value.now >= value.policy.policy_valid_until
         || value.next_version > MAX_INTEGER
-        || (value.genesis && (value.previous_version != 0
-            || value.next_version != 0 || value.previous_state != [0; 32]
-            || value.settlement_marker != [0; 32]))
+        || (value.genesis
+            && (value.previous_version != 0
+                || value.next_version != 0
+                || value.previous_state != [0; 32]
+                || value.settlement_marker != [0; 32]))
         || (!value.genesis && value.previous_version.checked_add(1) != Some(value.next_version))
         || value.policy.digest(&value.community)? != value.policy_digest
     {
@@ -112,14 +125,23 @@ pub fn statement_bytes(value: &AccountStatement) -> Result<Vec<u8>, Error> {
     }
     let mut bytes = b"cfrm.account.statement.v1\0".to_vec();
     bytes.extend_from_slice(&value.protocol_version.to_be_bytes());
-    for digest in [value.community, value.owner, value.policy_digest, value.enrollment_root] {
+    for digest in [
+        value.community,
+        value.owner,
+        value.policy_digest,
+        value.enrollment_root,
+    ] {
         bytes.extend_from_slice(&digest);
     }
     bytes.extend_from_slice(&value.now.to_be_bytes());
     bytes.push(u8::from(value.genesis));
     bytes.extend_from_slice(&value.previous_version.to_be_bytes());
     bytes.extend_from_slice(&value.next_version.to_be_bytes());
-    for digest in [value.previous_state, value.next_state, value.settlement_marker] {
+    for digest in [
+        value.previous_state,
+        value.next_state,
+        value.settlement_marker,
+    ] {
         bytes.extend_from_slice(&digest);
     }
     value.policy.append(&mut bytes);
@@ -156,8 +178,10 @@ pub struct AccountRequest {
 }
 
 pub fn account_request_bytes(value: &AccountRequest) -> Result<Vec<u8>, Error> {
-    if value.request_id == [0; 32] || value.issued_at != value.statement.now
-        || value.issued_at >= value.expires_at || value.expires_at > MAX_INTEGER
+    if value.request_id == [0; 32]
+        || value.issued_at != value.statement.now
+        || value.issued_at >= value.expires_at
+        || value.expires_at > MAX_INTEGER
         || value.proof.is_empty()
     {
         return Err(Error::InvalidInput);
@@ -194,7 +218,8 @@ pub struct AccountAcceptance {
 }
 
 pub fn account_acceptance_bytes(value: &AccountAcceptance) -> Result<Vec<u8>, Error> {
-    if value.request_id == [0; 32] || value.accepted_at < value.statement.now
+    if value.request_id == [0; 32]
+        || value.accepted_at < value.statement.now
         || value.accepted_at > MAX_INTEGER
     {
         return Err(Error::InvalidInput);
@@ -209,9 +234,15 @@ pub fn account_acceptance_bytes(value: &AccountAcceptance) -> Result<Vec<u8>, Er
     Ok(bytes)
 }
 
-pub fn verify_account_acceptance(value: &AccountAcceptance, operator_key: &[u8; 32]) -> Result<(), Error> {
-    signature(&data_encoding::BASE64URL_NOPAD.encode(operator_key),
-        &account_acceptance_bytes(value)?, &value.signature)
+pub fn verify_account_acceptance(
+    value: &AccountAcceptance,
+    operator_key: &[u8; 32],
+) -> Result<(), Error> {
+    signature(
+        &data_encoding::BASE64URL_NOPAD.encode(operator_key),
+        &account_acceptance_bytes(value)?,
+        &value.signature,
+    )
 }
 
 /// A fresh, authenticated request can recover an old accepted response after
@@ -230,8 +261,10 @@ pub struct AccountStatusRequest {
 }
 
 pub fn account_status_bytes(value: &AccountStatusRequest) -> Result<Vec<u8>, Error> {
-    if value.challenge == [0; 32] || value.issued_at == 0
-        || value.issued_at >= value.expires_at || value.expires_at > MAX_INTEGER
+    if value.challenge == [0; 32]
+        || value.issued_at == 0
+        || value.issued_at >= value.expires_at
+        || value.expires_at > MAX_INTEGER
         || value.request_id == Some([0; 32])
     {
         return Err(Error::InvalidInput);
@@ -268,11 +301,13 @@ pub fn account_status_response_bytes(value: &AccountStatusResponse) -> Result<Ve
     bytes.push(u8::from(value.acceptance.is_some()));
     let accepted = match &value.acceptance {
         Some(acceptance) => {
-            if acceptance.accepted_at > value.observed_at { return Err(Error::InvalidInput); }
+            if acceptance.accepted_at > value.observed_at {
+                return Err(Error::InvalidInput);
+            }
             let mut signed = account_acceptance_bytes(acceptance)?;
             signed.extend_from_slice(&decode::<64>(&acceptance.signature)?);
             Sha256::digest(signed).into()
-        },
+        }
         None => [0; 32],
     };
     bytes.extend_from_slice(&accepted);
@@ -281,21 +316,34 @@ pub fn account_status_response_bytes(value: &AccountStatusResponse) -> Result<Ve
 
 /// Verify the reply to the *exact* fresh status challenge. An old signed
 /// acceptance alone is insufficient evidence that it is the current state.
-pub fn verify_account_status_response(value: &AccountStatusResponse,
-    request: &AccountStatusRequest, operator_key: &[u8; 32]) -> Result<(), Error>
-{
+pub fn verify_account_status_response(
+    value: &AccountStatusResponse,
+    request: &AccountStatusRequest,
+    operator_key: &[u8; 32],
+) -> Result<(), Error> {
     let mut signed_request = account_status_bytes(request)?;
     signed_request.extend_from_slice(&decode::<64>(&request.signature)?);
     let request_digest: [u8; 32] = Sha256::digest(signed_request).into();
-    if value.status_request_digest != request_digest || value.observed_at < request.issued_at
+    if value.status_request_digest != request_digest
+        || value.observed_at < request.issued_at
         || value.observed_at >= request.expires_at
-    { return Err(Error::Replay); }
+    {
+        return Err(Error::Replay);
+    }
     if let Some(acceptance) = &value.acceptance {
-        if acceptance.statement.owner != request.owner || acceptance.statement.community != request.community
-            || request.request_id.is_some_and(|id| id != acceptance.request_id)
-        { return Err(Error::Admission); }
+        if acceptance.statement.owner != request.owner
+            || acceptance.statement.community != request.community
+            || request
+                .request_id
+                .is_some_and(|id| id != acceptance.request_id)
+        {
+            return Err(Error::Admission);
+        }
         verify_account_acceptance(acceptance, operator_key)?;
     }
-    signature(&data_encoding::BASE64URL_NOPAD.encode(operator_key),
-        &account_status_response_bytes(value)?, &value.signature)
+    signature(
+        &data_encoding::BASE64URL_NOPAD.encode(operator_key),
+        &account_status_response_bytes(value)?,
+        &value.signature,
+    )
 }

@@ -6,13 +6,28 @@ cargo --version
 node --version
 artifact_dir="$ARTIFACT_ROOT/$CI_COMMIT_SHA/private-accounting"
 export HASH_SCHEME="${HASH_SCHEME:-sha256-v1}"
+export ACCOUNTING_MODE="${ACCOUNTING_MODE:-settlement-v1}"
 case "$HASH_SCHEME" in
   sha256-v1) ;;
   poseidon2-bn254-fixed-128-v1) artifact_dir="$artifact_dir-$HASH_SCHEME" ;;
   *) printf 'Unknown accounting commitment scheme\n'; exit 2 ;;
 esac
+case "$ACCOUNTING_MODE" in
+  settlement-v1) ;;
+  account-state-v1)
+    test "$HASH_SCHEME" = poseidon2-bn254-fixed-128-v1
+    test -n "${ACCOUNT_POLICY_JSON:-}"
+    export ACCOUNT_POLICY_JSON
+    artifact_dir="$ARTIFACT_ROOT/$CI_COMMIT_SHA/private-accounting-account-state-v1"
+    ;;
+  *) printf 'Unknown accounting relation\n'; exit 2 ;;
+esac
 case "${CHECK_PHASE:-full}" in
   full) ;;
+  compile)
+    test "$ACCOUNTING_MODE" = account-state-v1
+    artifact_dir="$artifact_dir-compile"
+    ;;
   profile)
     [[ "${CIRCUIT_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] || exit 2
     artifact_dir="$artifact_dir-profile-$CIRCUIT_SHA256"
@@ -30,6 +45,8 @@ capture() {
   test ! -f package-lock.json || cp package-lock.json "$artifact_dir/package-lock.json"
   test ! -f native/Cargo.lock || cp native/Cargo.lock "$artifact_dir/native-Cargo.lock"
   test ! -f setup-lock.json || cp setup-lock.json "$artifact_dir/setup-lock.json"
+  test ! -f account-state/setup-lock.json || cp account-state/setup-lock.json "$artifact_dir/account-state-setup-lock.json"
+  test ! -f ../../Cargo.lock || cp ../../Cargo.lock "$artifact_dir/cfrm-Cargo.lock"
   for name in manifest.json circuit.json; do
     test ! -f "public/$name" || cp "public/$name" "$artifact_dir/$name"
   done
@@ -60,6 +77,25 @@ test "$(uname -s)" = Linux
 test "$(uname -m)" = x86_64
 timeout 600 npm ci --libc=glibc --ignore-scripts --no-audit --no-fund \
   2>&1 | tee "$artifact_dir/npm-install.log"
+if test "${CHECK_PHASE:-full}" = compile; then
+  export ACCOUNTING_ARTIFACT_DIR="$artifact_dir"
+  timeout 600 node --input-type=module <<'JS' 2>&1 | tee "$artifact_dir/circuit-compile.log"
+import { compile, createFileManager } from '@noir-lang/noir_wasm';
+import { writeFile, readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+const compiled = await compile(createFileManager(resolve('account-state')));
+if (!compiled.program?.bytecode) throw new Error('No compiled circuit');
+await writeFile(resolve(process.env.ACCOUNTING_ARTIFACT_DIR, 'circuit.json'), JSON.stringify(compiled.program));
+const sources = [];
+for (const name of ['Nargo.toml','src/main.nr','src/indexed.nr']) {
+  sources.push({name,sha256:createHash('sha256').update(await readFile('account-state/'+name)).digest('hex')});
+}
+await writeFile(resolve(process.env.ACCOUNTING_ARTIFACT_DIR, 'circuit-sources.json'), JSON.stringify(sources,null,2));
+console.log('Account-state circuit compilation passed; no proof or browser execution implied');
+JS
+  exit 0
+fi
 if test "${CHECK_PHASE:-full}" = profile; then
   test -n "$CIRCUIT_PATH"
   test -n "$CIRCUIT_SHA256"
@@ -69,13 +105,39 @@ if test "${CHECK_PHASE:-full}" = profile; then
   exit 0
 fi
 test -x "$BROWSER_BIN"
-timeout 1200 cargo build --locked --manifest-path native/Cargo.toml --release \
-  2>&1 | tee "$artifact_dir/native-build.log"
-cargo fmt --manifest-path native/Cargo.toml
-tar --create --file "$artifact_dir/formatted-native-source.tar" native/src
+if test "$ACCOUNTING_MODE" = account-state-v1; then
+  test -n "$CMSG_SOURCE_ARCHIVE"
+  test -n "$CMSG_SOURCE_SHA256"
+  printf '%s  %s\n' "$CMSG_SOURCE_SHA256" "$CMSG_SOURCE_ARCHIVE" | sha256sum --check --strict
+  cmsg_revision="$(git get-tar-commit-id < "$CMSG_SOURCE_ARCHIVE")"
+  # cfrm declares exactly one external source in this manifest for this suite.
+  expected_cmsg_revision="$(sed -n 's/^revision = "\([0-9a-f]\{40\}\)"$/\1/p' ../../.ci/archives.toml)"
+  test "$cmsg_revision" = "$expected_cmsg_revision"
+  cmsg_source="$PWD/.cmsg-source"
+  mkdir -p "$cmsg_source"
+  tar --extract --touch --file "$CMSG_SOURCE_ARCHIVE" --directory "$cmsg_source" --no-same-owner
+  timeout 1200 cargo build --locked --manifest-path "$cmsg_source/Cargo.toml" --release --example accounting_fixture \
+    2>&1 | tee "$artifact_dir/cmsg-fixture-build.log"
+  cp "$cmsg_source/Cargo.lock" "$artifact_dir/cmsg-Cargo.lock"
+  printf '%s\n' "$cmsg_revision" > "$artifact_dir/cmsg-source-revision.txt"
+  printf '%s\n' "$CMSG_SOURCE_SHA256" > "$artifact_dir/cmsg-source-archive.sha256"
+  timeout 1200 cargo build --locked --manifest-path ../../Cargo.toml --no-default-features --features sqlite \
+    --release --example account_ledger_fixture 2>&1 | tee "$artifact_dir/ledger-fixture-build.log"
+  export ACCOUNTING_FIXTURE="$CARGO_TARGET_DIR/release/examples/accounting_fixture"
+  export ACCOUNTING_LEDGER_FIXTURE="$CARGO_TARGET_DIR/release/examples/account_ledger_fixture"
+  test -x "$ACCOUNTING_LEDGER_FIXTURE"
+  sha256sum "$ACCOUNTING_LEDGER_FIXTURE" > "$artifact_dir/ledger-fixture.sha256"
+  cargo fmt --manifest-path ../../Cargo.toml
+  tar --create --file "$artifact_dir/formatted-ledger-source.tar" --directory ../.. src/accounting.rs src/accounting_ledger.rs examples/account_ledger_fixture.rs
+else
+  timeout 1200 cargo build --locked --manifest-path native/Cargo.toml --release \
+    2>&1 | tee "$artifact_dir/native-build.log"
+  cargo fmt --manifest-path native/Cargo.toml
+  tar --create --file "$artifact_dir/formatted-native-source.tar" native/src
+  export ACCOUNTING_FIXTURE="$CARGO_TARGET_DIR/release/cfrm-private-accounting-fixture"
+fi
 CFRM_BUNDLER_BINDING="$PWD/node_modules/@rolldown/binding-linux-x64-gnu" \
   timeout 900 npm run build 2>&1 | tee "$artifact_dir/browser-build.log"
-export ACCOUNTING_FIXTURE="$CARGO_TARGET_DIR/release/cfrm-private-accounting-fixture"
 export BROWSER_EVIDENCE="$artifact_dir/browser-evidence.json"
 export ACCOUNTING_ARTIFACT_DIR="$artifact_dir"
 export BROWSER_BIN

@@ -4,8 +4,12 @@ set -euo pipefail
 rustc --version
 cargo --version
 node --version
-test -x "$BROWSER_BIN"
 artifact_dir="$ARTIFACT_ROOT/$CI_COMMIT_SHA/private-accounting"
+case "${CHECK_PHASE:-full}" in
+  full) ;;
+  profile) artifact_dir="$artifact_dir-profile" ;;
+  *) printf 'Unknown private accounting check phase\n'; exit 2 ;;
+esac
 mkdir -p "$artifact_dir"
 artifact_dir="$(realpath "$artifact_dir")"
 cd experiments/private-accounting
@@ -47,6 +51,15 @@ test "$(uname -s)" = Linux
 test "$(uname -m)" = x86_64
 timeout 600 npm ci --libc=glibc --ignore-scripts --no-audit --no-fund \
   2>&1 | tee "$artifact_dir/npm-install.log"
+if test "${CHECK_PHASE:-full}" = profile; then
+  test -n "$CIRCUIT_PATH"
+  test -n "$CIRCUIT_SHA256"
+  export CIRCUIT_PATH CIRCUIT_SHA256
+  PROFILE_ARTIFACT_DIR="$artifact_dir" timeout 300 node profile.mjs \
+    2>&1 | tee "$artifact_dir/circuit-profile.log"
+  exit 0
+fi
+test -x "$BROWSER_BIN"
 timeout 1200 cargo build --locked --manifest-path native/Cargo.toml --release \
   2>&1 | tee "$artifact_dir/native-build.log"
 cargo fmt --manifest-path native/Cargo.toml

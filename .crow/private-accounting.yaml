@@ -9,6 +9,9 @@ variables:
   BROWSER_BIN: {default: ""}
   RESOLVE_DEPENDENCIES: {default: "0"}
   RESOLVE_SETUP: {default: "0"}
+  CHECK_PHASE: {default: "full"}
+  CIRCUIT_PATH: {default: ""}
+  CIRCUIT_SHA256: {default: ""}
 steps:
   - name: verified-source
     image: bash

@@ -166,8 +166,9 @@ unlinkability or constitute two proofs of one shared event.
 Evidence records source/setup hashes, browser/runtime versions, witness/proving/
 verification times, proof bytes, served/download bytes, and failure stages.
 The two proofs share a warmed backend; they are not repeated measurements of
-one identical circuit witness. End-of-run JS heap is only a sample. **Peak WASM
-memory, peak process memory, iOS and Android performance remain unmeasured.**
+one identical circuit witness. End-of-run JS heap is only a sample. **Exact peak
+WASM memory, iOS and Android performance remain unmeasured.** The harness's
+process-family samples are a separate, incomplete estimate of resident memory.
 No result is a pass until the actual CI run succeeds.
 
 ### Measured baseline: Crow 9/37
@@ -196,9 +197,39 @@ number is not a per-proof verification benchmark.
 This baseline downloaded both browser binaries. Its browser verification also
 [recomputed the verification key each time](https://github.com/AztecProtocol/aztec-packages/blob/v5.0.0/barretenberg/ts/src/barretenberg/backend.ts).
 The follow-up source selects one binary and uses the hash-checked build key
-with `UltraHonkVerifierBackend`; its measurements must come from a new CI run.
+with `UltraHonkVerifierBackend`; its measured result follows below.
 This desktop synthetic result proves neither mobile feasibility, full private
 accounting, distributed concurrency nor anonymity against traffic observation.
+
+### Measured follow-up: Crow 9/38
+
+Source `36fc44b427a3cf7702d30d45fd0cc9aa212c5f25` passed **41 browser checks
+and 19 independent-verifier checks** on the same recorded browser/runtime
+versions. The circuit, setup and cryptographic relation were unchanged.
+Hash-verified artifacts are retained under
+`/workspaces/component-releases/cfrm/36fc44b427a3cf7702d30d45fd0cc9aa212c5f25/private-accounting`.
+
+| Measurement | Outgoing peer answer | Incoming owner closure |
+| --- | ---: | ---: |
+| Witness generation | 38.72 ms | 31.34 ms |
+| Browser proving | 18.20 s | 17.28 s |
+| Browser verification with pinned key | 38.07 ms | 32.10 ms |
+| Binary proof, excluding public inputs/JSON | 14,656 bytes | 14,656 bytes |
+
+The harness recorded **41,849,684 loaded bytes**. Across 219 process-family
+samples, the largest complete PSS sum was **1,011,635,200 bytes (964.8 MiB)**;
+the largest complete RSS sum was 1,460,424,704 bytes. PSS apportions shared
+pages; summed RSS double-counts them. This covers Chromium and discovered
+descendants, up to ten processes, excluding the native fixture and Node verifier.
+There were 217 complete samples and two incomplete samples caused by exited or
+unreadable processes. Maximum sample gap was 200.54 ms and sample duration
+118.62 ms. Sequential reads are not atomic; short peaks and descendants
+reparented before discovery can be missed. These are sampled process estimates,
+**not exact peak WASM allocation**. End-of-run JS heap was 65,004,298 bytes.
+
+Roughly 1 GB of sampled browser memory for one obligation warrants further
+measurement and circuit optimization before mobile feasibility can be accepted.
+The faster verifier does not remove the prover's memory or latency costs.
 
 ## Required work beyond this spike
 

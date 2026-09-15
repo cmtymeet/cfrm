@@ -190,12 +190,19 @@ The [isolated executable spike](../experiments/private-accounting/README.md)
 uses Noir's built-in P-256 verifier and browser WebCrypto signing, with a real
 Ed25519-verified root/device enrollment bridge. Crow **9/37** passed at source
 `310bd23086f0978b5ffe3f7492dcb28e30786eb9`: 40 browser checks and 19 independent
-verifier checks. Two 14,656-byte binary proofs took 18.10 and 17.62 seconds to
-generate in desktop Chromium with one prover thread. Browser verification took
-4.63 and 4.56 seconds including key recomputation; the follow-up source reuses
-the pinned key. The circuit contains 200,214 gates. Loaded bytes were 52.4 MB;
-peak WASM/process memory and mobile performance remain unmeasured. The 2 GiB
-configured ceiling is not measured usage.
+verifier checks. Follow-up **9/38**, source
+`36fc44b427a3cf7702d30d45fd0cc9aa212c5f25`, passed 41+19 with the same relation,
+one selected binary and a pinned verifier key. Its two 14,656-byte binary proofs
+took 18.20 and 17.28 seconds to generate in desktop Chromium with one prover
+thread; verification took 38.07 and 32.10 milliseconds. Public inputs/JSON are
+additional bytes. The circuit contains 200,214 gates; loaded bytes were 41.85 MB.
+Sampled browser-family PSS reached **1,011,635,200 bytes (964.8 MiB)**, excluding
+the native fixture and Node verifier. Of 219 samples, 217 were complete and two
+missed exiting/unreadable processes; maximum sample gap was 200.54 ms. This is
+an incomplete process-memory estimate, not exact peak WASM allocation. Mobile
+performance remains unmeasured. Neither the 2 GiB ceiling nor the 65 MB end JS
+heap sample describes actual peak memory. This result warrants optimization
+before mobile suitability can be accepted.
 
 This proves only settlement of one synthetic, already-reserved obligation.
 It tests root-owned delegated authority and hidden owner/receipt equality,
@@ -209,10 +216,10 @@ receipts, and production `resolve_private` remains unsupported.
 
 The next bounded checks are:
 
-1. Measure browser process memory and repeat the unchanged relation with only
-   the selected WASM binary and a pinned verification key. Separate linear WASM
-   allocation from sampled process memory; neither end-of-run JS heap nor a
-   configured ceiling establishes peak use. Measure target mobile browsers
+1. Attribute gate costs on the existing compiled circuit, then separately
+   measure a reviewed proof-friendly commitment/Merkle variant retaining
+   WebCrypto P-256 receipt authentication. Continue measuring process memory
+   separately from linear WASM allocation. Measure target mobile browsers
    before accepting an all-platform feasibility claim.
 
 2. Replace the synthetic pre-reserved starting state with one root-owned,

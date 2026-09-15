@@ -10,6 +10,9 @@ variables:
   RESOLVE_DEPENDENCIES: {default: "0"}
   RESOLVE_SETUP: {default: "0"}
   CHECK_PHASE: {default: "full"}
+  REUSE_ARTIFACT_DIR: {default: ""}
+  REUSE_ARTIFACT_SHA256: {default: ""}
+  ACCOUNT_SCENARIOS: {default: "answer close"}
   CIRCUIT_PATH: {default: ""}
   CIRCUIT_SHA256: {default: ""}
   HASH_SCHEME: {default: "sha256-v1"}

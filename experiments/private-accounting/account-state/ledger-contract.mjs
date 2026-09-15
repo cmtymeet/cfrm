@@ -2,7 +2,7 @@
 // Test-only operator identity/clock; no witness openings cross this boundary.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createHash, createPrivateKey, createPublicKey, verify as verifyEd25519 } from 'node:crypto';
 
@@ -53,7 +53,7 @@ export async function runRustAccountLedgerContract(result, enrolled) {
   const checks = []; let childProcesses = 0;
   const checked = (condition, message) => { assert.ok(condition, message); checks.push(message); };
   async function invoke(input, drop = false) {
-    childProcesses++;
+    const invocation = ++childProcesses, began = performance.now();
     const child = spawn(binary, drop ? [...args, 'drop-response'] : args,
       {stdio:['pipe','pipe','pipe'], detached:true});
     let stdout = '', stderr = '', timedOut = false, oversized = false;
@@ -74,6 +74,8 @@ export async function runRustAccountLedgerContract(result, enrolled) {
       let response;
       try { response = JSON.parse(stdout); } catch { throw new Error('Native ledger fixture response: '+stderr); }
       if ((code === 0) !== (response.ok === true)) throw new Error('Native ledger fixture exit/response mismatch: '+stderr);
+      await appendFile(resolve(dir, 'fixture-outcomes.jsonl'), JSON.stringify({invocation,
+        action:input.action, ok:response.ok, error:response.error, elapsedMs:performance.now()-began})+'\n');
       return response;
     } finally { clearTimeout(deadline); clearTimeout(force); }
   }
@@ -119,7 +121,8 @@ export async function runRustAccountLedgerContract(result, enrolled) {
       assert.notDeepEqual(input.request.requestId,alternate.request.requestId);
       const outcomes = await Promise.all([invoke(input),invoke(alternate)]);
       checked(outcomes.filter(value => value.ok).length === 1 && outcomes.filter(value => value.error === 'Replay').length === 1,
-        'independent Rust processes accept exactly one of two valid owner-signed successors');
+        'independent Rust processes accept exactly one of two valid owner-signed successors: '+
+          JSON.stringify(outcomes.map(({ok,error}) => ({ok,error}))));
       const winner = outcomes[0].ok ? 0 : 1; response = outcomes[winner]; acceptedInput = winner ? alternate : input;
       raced = true;
     } else if (i === result.proofs.length - 1) {

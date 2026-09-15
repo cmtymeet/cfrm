@@ -1,8 +1,10 @@
 # Account-state foundation
 
-**Version 2 Answer and Close integrations passed.** Real browser
-account and peer proofs now compose with signed Rust ledger acceptance and the
-native cmsg release gate. This does not enable production
+**Fixed-wait refund and runtime waiting-period tuning are source candidates.**
+The archived revision2 Answer/Close integrations below passed with the former
+Close/expiry burn rule. They do not validate this revision3 candidate. Real
+browser account and peer proofs compose with signed Rust ledger acceptance and
+the native cmsg release gate. This does not enable production
 `AllocationLedger::resolve_private`, select numerical product policy, or establish
 complete recovery or mobile feasibility. Archived version 1 evidence below
 describes a different policy.
@@ -11,7 +13,7 @@ describes a different policy.
 
 One named permanent owner opens its last accepted hiding commitment and proves
 one successor. Its registered accounting-secret commitment, owner, community,
-policy and state version are bound throughout. The current enrollment path
+immutable economic policy and state version are bound throughout. The current enrollment path
 contains the actual root/device-authorized P256 delegation digest. An operator
 cannot replace the secret through a renewed enrollment and still open the old
 state. Lifetime genesis uniqueness and competing-device acceptance additionally
@@ -22,7 +24,7 @@ credit, three empty authenticated maps, permanent creation time and refill
 frontier conservatively anchored at `validUntil`, and zero admissions in the
 current window. Outgoing and
 incoming reservations debit **one available balance**. Each map entry records
-the role, full original peer/nonce/group/contact policy, amount, admission time,
+the role, full original peer/nonce/group/contact policy, amount, opened-at and original expiry,
 historical peer and owner authority and Prepared/Active/Settled/Canceled/Expired phase. Every terminal transition retains
 the entry as a tombstone. New reservations prove event absence in both role
 maps, preventing role changes from resetting an event. A third map retains
@@ -31,10 +33,13 @@ lifetime pair membership; repeated pairs receive no invented extra reward.
 Reservation moves configured units from available to reserved and consumes one
 shared admission in the fixed time window. Refunds never restore that count.
 Activation changes only Prepared to Active. Answer restores both reservations;
-recipient Close restores its own reservation while leaving the sender's cost
-spent. Prepared cancellation refunds capacity and retains a counted admission
-and permanent tombstone. Active outgoing expiry spends the reservation without
-resolving the recipient's inbox or refunding the sender.
+recipient Close restores its own reservation immediately. It cannot settle,
+burn or refund the sender's reservation early. The outgoing bond remains locked
+until confirmed Answer or its original fixed deadline. Prepared cancellation
+refunds capacity and retains a counted admission and permanent tombstone.
+Active outgoing expiry refunds exactly once without a counterpart signature,
+resolving no recipient obligation and reopening no contact. Suppressing a Close
+receipt therefore cannot improve the sender's refund timing or amount.
 
 Total `available + reserved` cannot exceed `initialCredit` while young or
 `maximumAvailable` after `newcomerPeriod` since permanent genesis. Maturity
@@ -43,13 +48,20 @@ creates headroom, not credit. A due refill grants exactly
 frontier to `validUntil`, including zero grants. Due time is measured from that
 frontier; backdated proofs cannot collect repeated grants in one window. Offline
 time never multiplies the grant. Conservation permits
-only that issuance and exact outgoing Close/expiry burns. Other paths, genesis
+only that refill issuance; refunds move reserved units back to available. Other paths, genesis
 age and admission counters remain fixed.
 
-The immutable slot `admittedAt` means the common introduction **opened-at**,
-not the receiver's reserve time. Incoming reserve requires it explicitly.
-Reserve/activate/Answer must fit inside the shared lease. Close can clear an
+The immutable slot `admittedAt` means the common introduction **opened-at**.
+Outgoing reserve requires `openedAt == now` and commits
+`expiresAt = now + current abandonAfter`. Incoming reserve explicitly adopts
+both values from the genuinely verified outgoing Active presentation. That
+cross-owner proof/consent boundary belongs to the native peer gate, not the
+incoming account circuit alone. The gate requires matching pair, role, nonce,
+group, opened-at and expiry before protected release.
+Reserve/activate/Answer must fit inside the stored lease. Close can clear an
 incoming obligation after the deadline; late Answer cannot revive a tombstone.
+Every original expiry must precede immutable `policyValidUntil`, leaving time
+to prove its refund. New admissions near that final policy boundary are rejected.
 
 The public policy supplies initial credit, maximum available, per-role amounts,
 revision and validity interval, plus `newcomerPeriod:u64`, `rateWindow:u64`,
@@ -67,6 +79,29 @@ Protocol2 statement signing uses `cfrm.account.statement.v2\0`. Public
 expiry within it and rechecks after proof verification. Reserve/activate/Answer
 fit the entire proof interval within the lease; reproving near a boundary may
 be necessary. No contact deadline, private action or role enters the named wire.
+
+### Operational waiting-period tuning
+
+`abandonAfter` is the sole economic setting reloadable within this development
+circuit scope. The operator changes it through the durable Rust tuning CAS;
+policy revision, credit amounts, rate limits, refill terms and validity interval
+remain immutable. All values are validated and no product defaults are chosen.
+Changing other terms requires a separately designed migration, not a JSON edit.
+
+The public account `policyDigest` still binds the exact full current policy.
+Account commitments instead bind `statePolicyDigest`: SHA256 of the29-byte
+`cfrm.account-state-policy.v1\0` domain, community32, the first76 numeric policy
+bytes through `refillUnits` (excluding only `abandonAfter`), then depth byte32.
+This stable transcript is138 bytes and retains `policyRevision=3` across
+waiting-only tuning. Reloading a different wait preserves existing openings;
+every existing slot retains its original `expiresAt`. New outgoing reservations
+alone derive a new deadline. There is no implicit import of an older circuit scope.
+
+The ledger requires its exact current full policy before and after proof
+verification, rejecting stale writers. An already accepted exact retry remains
+recoverable after tuning. The test harness records its own fixed500→900 tuning
+step and supplies the independently trusted old/new policies to verification;
+a browser-supplied policy does not authorize operator tuning.
 
 ## Maps and retained authority
 
@@ -132,7 +167,8 @@ The browser submits every proof to a real persistent Rust ledger
 before advancing the page-local opening. Two separate Active peer proofs then
 feed the native cmsg gate through its trusted verifier; see the
 [peer bridge contract](../peer-reservation/README.md#live-fixture-bridge).
-Both integrations passed as recorded below.
+The previous revision2 integrations passed as recorded below; the current
+refund/tuning and peer-v3 changes await validation.
 Setup hashes live in `account-state/setup-lock.json`; only explicit initial
 `RESOLVE_SETUP=1` may create it. No browser witness is sent for remote proving.
 
@@ -150,9 +186,12 @@ backend accepts the setup; run9/45's rejected partial-chunk lock is not a pin.
 The browser proves both genesis states, both initial reservations and activations,
 and an additional outgoing obligation for the recipient. Answer then proves
 outgoing settlement and incoming settlement with the archived sender acknowledgment.
-Close proves sender expenditure and incoming settlement after sender expiry.
-Answer adds Prepared cancellation. Close adds activation of the other outgoing
-slot, its expiry and one refill. Times 100/300/600 are synthetic fixture controls.
+Answer adds Prepared cancellation and retains sender authority expiry200.
+The new Close fixture instead keeps both actual device authorities valid,
+proves immediate incoming Close at100, the original sender's fixed-deadline
+refund at600, another outgoing refund, and one refill. Both cases tune500→900
+after original Active reservations but before the native release gate binds;
+the original expiry600 stays fixed. Times and values are synthetic controls.
 
 After each proof, while the actual device is still authorized, cmsg signs its
 exact named request hashes and two independent random retry IDs. Reports contain
@@ -169,9 +208,9 @@ The common checkpoint and accepted test times come from retained native data,
 not browser claims. Both proof verifiers use Barretenberg; this is not independent
 implementation diversity.
 
-## Executed version 2 evidence
+## Archived revision2 integration evidence
 
-Crow 9/58 passed both scenarios at cfrm
+Crow 9/58 passed the former Close/expiry burn policy in both scenarios at cfrm
 `eddc92835b2e2b08bc431852c8ff3332203198eb`, with cmsg
 `80bbcf30e777b56a9ce6f8ea4a261f440c349eb0`:
 
@@ -268,7 +307,8 @@ claiming readiness for the intended browser experience. Mobile viability and
 exact peak Wasm memory remain unverified.
 
 Private matching Active proofs and the native release gate are now exercised
-in both v2 fixtures above. Recovery/opening synchronization, authenticated
+in both archived fixtures above. The new refund/tuning relation still needs
+its own execution evidence. Recovery/opening synchronization, authenticated
 policy/key migration, proof of opaque history evolution, operator consistency
 and target-browser measurements remain outside this evidence. Additional
 rewards/disapproval are unselected. This is neither a complete production

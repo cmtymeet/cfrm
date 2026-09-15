@@ -1,7 +1,8 @@
 # Peer reservation proof foundation
 
-**Version 2 Answer and Close integrations passed.** In each scenario, two real
-browser peer proofs verify against genuine Rust account acceptances and
+**Peer version3 is a source candidate; validation pending.** Archived peer-v2
+Answer/Close integrations below passed. In each, two real
+browser peer proofs verified against genuine Rust account acceptances and
 feed the native cmsg protected-release gate. Production
 `AllocationLedger::resolve_private` remains closed; this fixture does not
 establish deployment, complete recovery or mobile feasibility. The older v1
@@ -17,10 +18,10 @@ the owner's secret remain private.
 ## Wire and verification contract
 
 ```
-{ version: 2,
+{ version: 3,
   statement: {
     community, owner, peer, role, nonce, group, contactPolicyDigest,
-    historyDigest, phase, openedAt, ownerAuthority, accountPolicyDigest, stateVersion,
+    historyDigest, phase, openedAt, expiresAt, ownerAuthority, statePolicyDigest, stateVersion,
     stateCommitment, challenge, presentationBinding
   },
   proofScope: { circuitDigest, verifyingKeyDigest },
@@ -35,7 +36,7 @@ statement and account-circuit proof scope. That account scope differs from the
 new peer circuit scope. The peer learns the certificate's metadata as well as
 the selected tuple; no certificate or presentation goes into its named update.
 
-The relation has **388 public field elements**, ordered exactly as `main.nr`
+The relation has **389 public field elements**, ordered exactly as `main.nr`
 and `publicInputValues()`. Arbitrary bytes32 use two big-endian u128 limbs;
 state, owner-authority and presentation field outputs require canonical BN254 encoding.
 
@@ -46,9 +47,10 @@ independently retained original cmsg delegation and recomputes the leaf. A
 sibling device cannot substitute its own enrollment for that reservation.
 This field never enters the named account statement.
 
-The public peer-only `openedAt` is tied to the selected slot's immutable common
-lease. Both peers must independently expect that same value. The host rejects
-`now - openedAt >= abandonAfter`; Prepared evidence never authorizes incoming
+The public peer-only `openedAt` and `expiresAt` are tied to the selected slot's
+immutable common lease. Both peers must independently expect those same values.
+The host rejects `now >= expiresAt`; reloading a different current waiting
+period cannot move that deadline. Prepared evidence never authorizes incoming
 debit or payload. Account acceptance uses protocol2 with its common validity
 horizon; its original acceptance time must lie within that signed window.
 
@@ -67,7 +69,7 @@ For each verification the host supplies:
   `enrollmentRoot` for the acceptance's common checkpoint.
 
 The verifier checks the signature, scope, accepted commitment/version,
-community/owner, exact policy digest and current validity, expected tuple and
+community/owner, stable policy digest and current validity, expected tuple and
 fresh challenge, then verifies the actual proof under the pinned peer VK. The
 host must bound transport JSON before parsing and must never accept expected
 values or verifier implementations supplied by the presenting peer.
@@ -93,7 +95,7 @@ The new fixed-length presentation hash is:
 
 ```
 Poseidon2_fixed_10(
-  ASCII("cfrm.peer-reservation.v2"), 1,
+  ASCII("cfrm.peer-reservation.v3"), 1,
   ownerSecretHi128, ownerSecretLo128, acceptedState, selectedSlotHash,
   challengeHi128, challengeLo128, historyHi128, historyLo128)
 ```
@@ -144,7 +146,8 @@ verification using separately loaded/pinned artifacts and the real adapter.
 
 The current source wires driver IPC to obtain the real acceptance **while the
 browser retains its private opening**, browser/Rust verification and the trusted
-Node adapter below. Both integrations passed as recorded below.
+Node adapter below. Archived peer-v2 integrations passed as recorded below;
+peer-v3 with explicit expiry and stable policy binding awaits validation.
 Account browser results do not retain openings outside the page.
 Do not serialize witnesses to the driver or
 replace this step with a synthetic acceptance.
@@ -171,7 +174,7 @@ current account. Browser IPC exposes no current-account lookup.
 
 The trusted CLI returns `{verified:true, statement, validUntil}`. This expiry is
 metadata, separate from the peer proof statement: the minimum of common policy
-expiry, the shared introduction lease end and the exact reservation-device
+expiry, the slot's original `expiresAt` and the exact reservation-device
 delegation expiry. Native verification already bounds that delegation within
 its original admission and root-device certificate. cmsg must recheck its own
 current clock against this absolute bound after asynchronous verification and
@@ -179,6 +182,17 @@ before release; verification need not finish in the same clock second.
 The account acceptance's original `statement.validUntil` bounds when its state
 transition could commit. It does **not** expire an accepted Active obligation
 at the next rate-window boundary and is not used as the release expiry.
+
+Peer `statePolicyDigest` binds the immutable economic policy, excluding only
+the operational waiting period. The original acceptance still contains its
+full signed account policy. The verifier checks that full digest and signature,
+then requires its stable digest to match the configured current policy and
+presented state. An old genuine certificate remains usable after waiting-only
+tuning while its original slot lease and device authority remain valid. The
+native cmsg gate retains that same stable digest and original lease. Incoming
+reservation copies the exact sender lease only after the real outgoing proof
+and local consent; the account circuit by itself does not establish that
+cross-owner authorization.
 
 The live bridge's bounded checks query every newly accepted own state, reject
 absent/altered identities and states, and reject a previous accepted state after
@@ -192,7 +206,7 @@ not establish that a certificate is the latest one.
 Only synthetic fixture pair presentations appear in test evidence. Production
 must keep these artifacts on the authenticated peer channel.
 
-## Executed version 2 evidence
+## Archived peer-v2 evidence
 
 Crow 9/58 at cfrm `eddc92835b2e2b08bc431852c8ff3332203198eb`, with cmsg
 `80bbcf30e777b56a9ce6f8ea4a261f440c349eb0`, passed 224 Chromium checks in Answer
@@ -224,5 +238,5 @@ memory requirement. Exact peak and mobile feasibility remain unmeasured.
 
 See [the reservation protocol](../../../docs/private-reservation-protocol.md)
 for the two-sided release and durable recovery requirements, and the
-[account evidence](../account-state/README.md#executed-version-2-evidence) for
+[account evidence](../account-state/README.md#archived-revision2-integration-evidence) for
 the larger state-transition proof and remaining renewal/recovery limitations.

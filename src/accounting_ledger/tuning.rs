@@ -47,15 +47,20 @@ pub(super) fn config_bytes(
 pub(super) fn check_config(transaction: &Transaction<'_>, expected: &[u8]) -> Result<(), Error> {
     let stored: Vec<u8> = transaction.query_row(
         "SELECT config FROM cfrm_accounts_config WHERE singleton=1",
-        [], |row| row.get(0),
+        [],
+        |row| row.get(0),
     )?;
-    if stored != expected { return Err(Error::PolicyMismatch); }
+    if stored != expected {
+        return Err(Error::PolicyMismatch);
+    }
     Ok(())
 }
 
 impl<V: AccountProofVerifier> AccountLedger<V> {
     /// Current local snapshot. Call `reload_policy` to observe another writer's update.
-    pub fn account_policy(&self) -> &AccountPolicy { &self.policy.account }
+    pub fn account_policy(&self) -> &AccountPolicy {
+        &self.policy.account
+    }
 
     pub fn waiting_period(&self) -> Result<WaitingPeriodTuning, Error> {
         Ok(WaitingPeriodTuning {
@@ -74,20 +79,34 @@ impl<V: AccountProofVerifier> AccountLedger<V> {
     /// `expected_revision` prevents concurrent operators from overwriting a
     /// newer decision. New writes on stale ledger handles fail closed.
     pub fn update_waiting_period(
-        &mut self, expected_revision: u64, seconds: u64, clock: impl Fn() -> u64,
+        &mut self,
+        expected_revision: u64,
+        seconds: u64,
+        clock: impl Fn() -> u64,
     ) -> Result<WaitingPeriodTuning, Error> {
-        if expected_revision != self.tuning_revision { return Err(Error::PolicyMismatch); }
+        if expected_revision != self.tuning_revision {
+            return Err(Error::PolicyMismatch);
+        }
         let mut policy = self.policy.clone();
         policy.account.abandon_after = seconds;
         policy.account.validate()?;
-        let revision = expected_revision.checked_add(1)
-            .filter(|v| *v <= MAX_INTEGER).ok_or(Error::InvalidInput)?;
+        let revision = expected_revision
+            .checked_add(1)
+            .filter(|v| *v <= MAX_INTEGER)
+            .ok_or(Error::InvalidInput)?;
         let digest = policy.account.digest(&self.community)?;
-        let config = config_bytes(&self.trust, &policy, &self.proof_scope,
-            self.operator.verifying_key().to_bytes(), revision)?;
+        let config = config_bytes(
+            &self.trust,
+            &policy,
+            &self.proof_scope,
+            self.operator.verifying_key().to_bytes(),
+            revision,
+        )?;
         let before = clock();
         check_time(before, 0)?;
-        let transaction = self.connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         check_config(&transaction, &self.config)?;
         let now = clock();
         check_time(now, clock_floor(&transaction)?.max(before))?;
@@ -95,7 +114,10 @@ impl<V: AccountProofVerifier> AccountLedger<V> {
             return Err(Error::Expired);
         }
         policy.account.reservation_deadline(now)?;
-        transaction.execute("UPDATE cfrm_accounts_config SET config=?1 WHERE singleton=1", [&config])?;
+        transaction.execute(
+            "UPDATE cfrm_accounts_config SET config=?1 WHERE singleton=1",
+            [&config],
+        )?;
         advance_clock(&transaction, now)?;
         transaction.commit()?;
         self.config = config;
@@ -109,15 +131,25 @@ impl<V: AccountProofVerifier> AccountLedger<V> {
     /// policy, proof, authority and database configuration must remain identical.
     pub fn reload_policy(&mut self) -> Result<WaitingPeriodTuning, Error> {
         let config: Vec<u8> = self.connection.query_row(
-            "SELECT config FROM cfrm_accounts_config WHERE singleton=1", [], |row| row.get(0),
+            "SELECT config FROM cfrm_accounts_config WHERE singleton=1",
+            [],
+            |row| row.get(0),
         )?;
         let stored: StoredConfig = serde_json::from_slice(&config).map_err(|_| Error::Storage)?;
         let mut policy = self.policy.clone();
         policy.account.abandon_after = stored.policy.account.abandon_after;
         policy.account.validate()?;
-        if stored.tuning_revision < self.tuning_revision || stored.tuning_revision > MAX_INTEGER
-            || config != config_bytes(&self.trust, &policy, &self.proof_scope,
-                self.operator.verifying_key().to_bytes(), stored.tuning_revision)? {
+        if stored.tuning_revision < self.tuning_revision
+            || stored.tuning_revision > MAX_INTEGER
+            || config
+                != config_bytes(
+                    &self.trust,
+                    &policy,
+                    &self.proof_scope,
+                    self.operator.verifying_key().to_bytes(),
+                    stored.tuning_revision,
+                )?
+        {
             return Err(Error::PolicyMismatch);
         }
         self.policy_digest = policy.account.digest(&self.community)?;

@@ -1,6 +1,6 @@
 import { fieldBytes, fieldValue } from '../hashes.mjs';
 import { cat, be, random, zeros } from '../common.mjs';
-import { IndexedMap, policyDigest, integer, SAFE, POLICY_KEYS } from './hashes.mjs';
+import { IndexedMap, policyDigest, statePolicyDigest, integer, SAFE, POLICY_KEYS } from './hashes.mjs';
 
 const POLICY_WIRE = [
   ['initialCredit','initial_credit',32], ['maximumAvailable','maximum_available',32],
@@ -27,7 +27,7 @@ const openingInput = s => ({ available: s.available, reserved: s.reserved,
   created_at: s.createdAt, admission_epoch: s.admissionEpoch, admissions: s.admissions, blind: s.blind });
 const slotInput = s => ({ role: s.role, peer: s.peer, nonce: s.nonce, group: s.group,
   contact_policy: s.contactPolicy, amount: s.amount, phase: s.phase,
-  admitted_at: s.admittedAt, peer_authority: s.peerAuthority, owner_authority: s.ownerAuthority });
+  admitted_at: s.admittedAt, expires_at: s.expiresAt, peer_authority: s.peerAuthority, owner_authority: s.ownerAuthority });
 const resolutionInput = r => ({ kind: r.kind, issued_at: r.issuedAt, history_digest: r.historyDigest,
   ed25519_receipt_digest: r.ed25519ReceiptDigest, signature: r.signature });
 const emptyResolution = now => ({ kind: 2, issuedAt: now, historyDigest: zeros(), ed25519ReceiptDigest: zeros(), signature: new Uint8Array(64) });
@@ -74,6 +74,7 @@ export class AccountWitness {
     Object.assign(value, { hashes, community, policy, checkpoint, ownerIndex, ownerSecret, now: BigInt(now), version: 0n });
     value.owner = checkpoint.entries[ownerIndex];
     value.policyHash = await policyDigest(community, policy);
+    value.statePolicyHash = await statePolicyDigest(community, policy);
     if (fieldValue(await hashes.secretHash(community, ownerSecret)) !== fieldValue(value.owner.secretHash)) throw new Error('Owner secret differs from verified enrollment');
     const empty = await IndexedMap.create(hashes);
     value.outgoing = empty; value.incoming = empty.clone(); value.pairs = empty.clone();
@@ -89,7 +90,16 @@ export class AccountWitness {
     return { input, statement: statementFromInput(input), next: value };
   }
   async commit(opening, version) {
-    return this.hashes.state(this.community, this.owner.member, this.policyHash, this.owner.secretHash, version, opening);
+    return this.hashes.state(this.community, this.owner.member, this.statePolicyHash, this.owner.secretHash, version, opening);
+  }
+  async withPolicy(policy) {
+    const stable = await statePolicyDigest(this.community, policy);
+    if (!stable.every((value, index) => value === this.statePolicyHash[index])) throw new Error('Immutable account policy changed');
+    const copy = this.clone(); copy.policy = structuredClone(policy);
+    copy.policyHash = await policyDigest(this.community, policy);
+    // This only prepares a witness. The host independently requires its exact
+    // current durable policy; a browser cannot authorize its own tuning.
+    return copy;
   }
   clone() {
     const copy = new AccountWitness(); Object.assign(copy, this);
@@ -105,7 +115,7 @@ export class AccountWitness {
       receipt_owner_enrollment: enrollmentInput(this.owner),
       old: openingInput(this.opening), new_blind: newBlind, action: 1,
       slot: slotInput({ role: 0, peer: zeros(), nonce: zeros(), group: zeros(), contactPolicy: zeros(), amount: 0,
-        phase: 1, admittedAt: BigInt(now), peerAuthority: 0n, ownerAuthority: 0n }),
+        phase: 1, admittedAt: BigInt(now), expiresAt: BigInt(now), peerAuthority: 0n, ownerAuthority: 0n }),
       own_map: emptyMapWitness(), opposite_map: emptyMapWitness(), pair_map: emptyMapWitness(), pair_exists: false,
       resolution: resolutionInput(emptyResolution(now)), acknowledgment: { issued_at: BigInt(now), signature: new Uint8Array(64) } };
   }
@@ -130,13 +140,15 @@ export class AccountWitness {
     return { now: at, capacity, admissionLimit: BigInt(mature ? p.maximumAdmissions : p.newcomerAdmissions),
       epoch: at / BigInt(p.rateWindow) };
   }
-  async reserve({ peerIndex, role, nonce, group, contactPolicy, openedAt, now = this.now }) {
+  async reserve({ peerIndex, role, nonce, group, contactPolicy, openedAt, expiresAt, now = this.now }) {
     if (role !== 0 && role !== 1) throw new Error('Reservation role');
     const at = this.at(now);
-    if (role === 1 && openedAt === undefined) throw new Error('Incoming reservation requires the common opened-at');
+    if (role === 1 && (openedAt === undefined || expiresAt === undefined)) throw new Error('Incoming reservation requires the authenticated common lease');
     const opened = integer(openedAt ?? at.now, 64);
-    if (opened === 0n || opened > at.now || at.now - opened >= BigInt(this.policy.abandonAfter)
-        || validityHorizon(now, this.policy) - opened > BigInt(this.policy.abandonAfter)) throw new Error('Reservation lease');
+    const expiry = integer(expiresAt ?? (at.now + BigInt(this.policy.abandonAfter)), 64);
+    if (opened === 0n || opened > at.now || expiry <= at.now || expiry >= BigInt(this.policy.policyValidUntil)
+        || validityHorizon(now, this.policy) > expiry
+        || (role === 0 && (opened !== at.now || expiry !== at.now + BigInt(this.policy.abandonAfter)))) throw new Error('Reservation lease');
     const admissions = this.opening.admissionEpoch === at.epoch ? this.opening.admissions + 1n : 1n;
     if (admissions > at.admissionLimit) throw new Error('Shared admission rate exhausted');
     const peer = this.checkpoint.entries[peerIndex];
@@ -145,7 +157,7 @@ export class AccountWitness {
     const amount = BigInt(role === 0 ? this.policy.outgoingReservation : this.policy.incomingReservation);
     if (this.opening.available < amount) throw new Error('Insufficient shared available capacity');
     const slot = { peerIndex, role, peer: peer.member, nonce, group, contactPolicy, amount, phase: 1,
-      admittedAt: opened, peerAuthority: peer.leaf, ownerAuthority: this.owner.leaf };
+      admittedAt: opened, expiresAt: expiry, peerAuthority: peer.leaf, ownerAuthority: this.owner.leaf };
     const own = role === 0 ? this.outgoing : this.incoming, opposite = role === 0 ? this.incoming : this.outgoing;
     const inserted = await own.insert(event, await this.hashes.obligation(event, slot, 1));
     const input = this.input(random(), now), next = this.clone();
@@ -165,10 +177,11 @@ export class AccountWitness {
     const oldSlot = this.slots.get(event.toString()); if (!oldSlot) throw new Error('Unknown private obligation');
     if (![2, 3, 4, 5].includes(action) || oldSlot.phase !== ([2, 4].includes(action) ? 1 : 2)) throw new Error('Invalid obligation phase');
     if (at.now < oldSlot.admittedAt) throw new Error('Future obligation');
-    const expired = at.now - oldSlot.admittedAt >= BigInt(this.policy.abandonAfter);
-    const withinHorizon = validityHorizon(now, this.policy) - oldSlot.admittedAt <= BigInt(this.policy.abandonAfter);
+    const expired = at.now >= oldSlot.expiresAt;
+    const withinHorizon = validityHorizon(now, this.policy) <= oldSlot.expiresAt;
     if (action === 2 && (expired || !withinHorizon)) throw new Error('Activation lease expired');
     if (action === 5 && (oldSlot.role !== 0 || !expired)) throw new Error('Only expired outgoing obligations may retire');
+    if (action === 3 && oldSlot.role === 0 && Number(resolution?.kind) !== 1) throw new Error('Outgoing Close cannot alter the fixed refund date');
     if (action === 3 && Number(resolution?.kind) === 1 && (expired || !withinHorizon)) throw new Error('Answer arrived after the common lease');
     const slot = structuredClone(oldSlot), next = this.clone(), input = this.input(random(), now);
     Object.assign(input, { action, slot: slotInput(slot),
@@ -184,13 +197,11 @@ export class AccountWitness {
       if (!resolution) throw new Error('Authenticated receipt required');
       input.resolution = resolutionInput(resolution);
       if (acknowledgment) input.acknowledgment = { issued_at: acknowledgment.issuedAt, signature: acknowledgment.signature };
-      // Only a verified recipient Close can leave the initiator's cost spent.
-      // The circuit derives this same private burn and proves conservation.
-      if (slot.role !== 0 || Number(resolution.kind) !== 2) next.opening.available += slot.amount;
+      next.opening.available += slot.amount;
       next.opening.reserved -= slot.amount;
       input.settlement_marker = fieldBytes(event);
     } else if (action === 4 || action === 5) {
-      if (action === 4) next.opening.available += slot.amount;
+      next.opening.available += slot.amount;
       next.opening.reserved -= slot.amount;
       input.settlement_marker = fieldBytes(event);
     }

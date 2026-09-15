@@ -42,6 +42,10 @@ export function policyBytes(community, policy) {
     be(newcomerAdmissions, 4), be(maximumAdmissions, 4), be(refill, 8), be(units, 4), be(abandon, 8), new Uint8Array([DEPTH]));
 }
 export const policyDigest = (community, policy) => sha(policyBytes(community, policy));
+export const statePolicyDigest = (community, policy) => {
+  const full = policyBytes(community, policy);
+  return sha(cat(utf8('cfrm.account-state-policy.v1\0'), bytes32(community), full.slice(55, 131), new Uint8Array([DEPTH])));
+};
 
 export function accountHashes(api) {
   const legacy = hashesFor(POSEIDON_SCHEME, async () => api);
@@ -70,7 +74,7 @@ export function accountHashes(api) {
     obligation: (event, slot, phase) => hash(4,
       [event, integer(slot.role, 8), ...limbs32(slot.peer), ...limbs32(slot.nonce), ...limbs32(slot.group),
         ...limbs32(slot.contactPolicy), integer(slot.amount, 32), integer(phase, 8),
-        time(slot.admittedAt), slot.peerAuthority, slot.ownerAuthority]),
+        time(slot.admittedAt), time(slot.expiresAt), slot.peerAuthority, slot.ownerAuthority]),
   };
 }
 

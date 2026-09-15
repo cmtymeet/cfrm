@@ -29,12 +29,20 @@ export async function runRustAccountLedgerContract(result, enrolled) {
   // browser-supplied roster/root or from a proof's claimed configuration.
   assert.equal(enrolled.synthetic, true);
   assert.deepEqual(enrolled.acceptedTimes, [100,300,600]);
+  const tunedPolicy = { ...manifest.accountPolicy, abandonAfter: 900 };
+  assert.deepEqual(enrolled.acceptedPolicies, [manifest.accountPolicy, tunedPolicy]);
+  const tuningIndex = process.env.ACCOUNT_SCENARIO === 'answer' ? 7 : process.env.ACCOUNT_SCENARIO === 'close' ? 8 : -1;
+  assert.ok(tuningIndex > 0);
+  assert.equal(enrolled.waitingPeriodTuning?.beforeProofIndex, tuningIndex);
+  assert.deepEqual(enrolled.waitingPeriodTuning.policy, tunedPolicy);
+  assert.equal(enrolled.waitingPeriodTuning.tuning.revision, 1);
+  assert.equal(enrolled.waitingPeriodTuning.tuning.seconds, 900);
   const trustedPath = resolve(dir, 'trusted-enrollment.json');
   await writeFile(trustedPath, JSON.stringify({community: enrolled.community,
-    entries: enrolled.entries, acceptedTimes: enrolled.acceptedTimes}));
+    entries: enrolled.entries, acceptedTimes: enrolled.acceptedTimes, acceptedPolicies: enrolled.acceptedPolicies}));
   const { createAccountVerifier } = await import('./verify.mjs');
   const verifier = await createAccountVerifier(manifestPath, {
-    community: enrolled.community, entries: enrolled.entries, acceptedTimes: enrolled.acceptedTimes,
+    community: enrolled.community, entries: enrolled.entries, acceptedTimes: enrolled.acceptedTimes, acceptedPolicies: enrolled.acceptedPolicies,
   });
   let root;
   try { root = Array.from(Buffer.from(verifier.checkpoint.root.toString(16).padStart(64,'0'), 'hex')); }
@@ -111,6 +119,19 @@ export async function runRustAccountLedgerContract(result, enrolled) {
   let raced = false, last;
   for (let i = 0; i < result.proofs.length; i++) {
     const record = result.proofs[i], input = command(record);
+    assert.deepEqual(record.statement.policy, i < tuningIndex ? manifest.accountPolicy : tunedPolicy);
+    if (i === tuningIndex) {
+      // Host-recorded fixed fixture action; a proof's policy cannot authorize
+      // its own runtime change. The real ledger performs the durable CAS.
+      const tuned = await invoke({action:'tuneWaitingPeriod',expectedRevision:0,seconds:900,now:100});
+      checked(tuned.ok, 'actual durable waiting-period tuning precedes the first changed-policy proof');
+      assert.deepEqual(tuned.value.policy,tunedPolicy);
+      assert.deepEqual(tuned.value.tuning,enrolled.waitingPeriodTuning.tuning);
+      const oldRetry = await invoke(last.input);
+      checked(oldRetry.ok, 'exact accepted old-policy retry remains recoverable after tuning');
+      assert.deepEqual(oldRetry.value,last.acceptance);
+      checked(!(await invoke(command(result.proofs[i-1],true))).ok, 'unused signed old-policy request cannot commit after tuning');
+    }
     const prepared = await invoke({action:'prepare', request:input.request});
     assert.equal(prepared.ok, true);
     assert.equal(prepared.value.statementDigest, Buffer.from(record.requestAuthorization.statementDigest).toString('hex'));

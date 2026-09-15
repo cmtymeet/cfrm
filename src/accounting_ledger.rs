@@ -198,8 +198,13 @@ impl<V: AccountProofVerifier> AccountLedger<V> {
             return Err(Error::InvalidInput);
         }
         let mut tuning_revision = 0;
-        let mut config = config_bytes(&trust, &policy, &proof_scope,
-            operator.verifying_key().to_bytes(), tuning_revision)?;
+        let mut config = config_bytes(
+            &trust,
+            &policy,
+            &proof_scope,
+            operator.verifying_key().to_bytes(),
+            tuning_revision,
+        )?;
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
@@ -228,16 +233,26 @@ impl<V: AccountProofVerifier> AccountLedger<V> {
             )
             .optional()?;
         if let Some(prior) = prior {
-            let stored: StoredConfig = serde_json::from_slice(&prior).map_err(|_| Error::PolicyMismatch)?;
+            let stored: StoredConfig =
+                serde_json::from_slice(&prior).map_err(|_| Error::PolicyMismatch)?;
             // The supplied wait is a bootstrap value. A restart loads the
             // durably tuned wait while every immutable setting stays pinned.
             policy.account.abandon_after = stored.policy.account.abandon_after;
             policy.account.validate()?;
             tuning_revision = stored.tuning_revision;
-            if tuning_revision > MAX_INTEGER { return Err(Error::PolicyMismatch); }
-            config = config_bytes(&trust, &policy, &proof_scope,
-                operator.verifying_key().to_bytes(), tuning_revision)?;
-            if prior != config { return Err(Error::PolicyMismatch); }
+            if tuning_revision > MAX_INTEGER {
+                return Err(Error::PolicyMismatch);
+            }
+            config = config_bytes(
+                &trust,
+                &policy,
+                &proof_scope,
+                operator.verifying_key().to_bytes(),
+                tuning_revision,
+            )?;
+            if prior != config {
+                return Err(Error::PolicyMismatch);
+            }
             policy_digest = policy.account.digest(&community)?;
         } else {
             transaction.execute("INSERT INTO cfrm_accounts_config VALUES(1,?1,0)", [&config])?;
@@ -309,9 +324,7 @@ impl<V: AccountProofVerifier> AccountLedger<V> {
             return Err(Error::InvalidInput);
         }
         let statement = &request.statement;
-        if statement.community != self.community
-            || request.proof_scope != self.proof_scope
-        {
+        if statement.community != self.community || request.proof_scope != self.proof_scope {
             return Err(Error::PolicyMismatch);
         }
         let before = clock();
@@ -352,7 +365,8 @@ impl<V: AccountProofVerifier> AccountLedger<V> {
             return Ok(result);
         }
         check_config(&transaction, &self.config)?;
-        if statement.policy != self.policy.account || statement.policy_digest != self.policy_digest {
+        if statement.policy != self.policy.account || statement.policy_digest != self.policy_digest
+        {
             return Err(Error::PolicyMismatch);
         }
         check_pending(
@@ -394,7 +408,8 @@ impl<V: AccountProofVerifier> AccountLedger<V> {
             return Ok(result);
         }
         check_config(&transaction, &self.config)?;
-        if statement.policy != self.policy.account || statement.policy_digest != self.policy_digest {
+        if statement.policy != self.policy.account || statement.policy_digest != self.policy_digest
+        {
             return Err(Error::PolicyMismatch);
         }
         check_pending(

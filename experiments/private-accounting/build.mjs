@@ -65,7 +65,7 @@ try {
   await writeFile('public/circuit-stats.json', JSON.stringify(circuitStats, null, 2) + '\n');
   let peerStats;
   if (peerCompiled) {
-    peerStats = await api.circuitStats({ circuit: { name: 'peer-reservation-v2',
+    peerStats = await api.circuitStats({ circuit: { name: 'peer-reservation-v3',
       bytecode: new Uint8Array(gunzipSync(Buffer.from(peerCompiled.program.bytecode, 'base64'))), verificationKey: new Uint8Array() },
       includeGatesPerOpcode: false,
       settings: { ipaAccumulation: false, oracleHashType: 'poseidon2', disableZk: false, optimizedSolidityVerifier: false } });
@@ -112,7 +112,7 @@ try {
   if (peerCompiled) {
     const peerVk = await new UltraHonkBackend(peerCompiled.program.bytecode, api).getVerificationKey(OPTIONS);
     await writeFile('public/peer-reservation/vk.bin', peerVk);
-    peerReservation = { mode: 'peer-reservation-v2', publicInputs: 388,
+    peerReservation = { mode: 'peer-reservation-v3', publicInputs: 389,
       circuitSha256: hash(await readFile('public/peer-reservation/circuit.json')), vkSha256: hash(peerVk),
       circuitSourceSha256: hash(await readFile('peer-reservation/src/main.nr')),
       nargoSha256: hash(await readFile('peer-reservation/Nargo.toml')), stats: peerStats, sharesAccountSetup: true };

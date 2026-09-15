@@ -154,6 +154,7 @@ impl Model {
             Action::Reserve(id, role, opened_at) => {
                 let expires_at = opened_at.checked_add(self.policy.abandon_after)
                     .filter(|end| *end <= 9_007_199_254_740_991).ok_or(Reject::Policy)?;
+                if expires_at >= self.policy.policy_valid_until { return Err(Reject::Expired); }
                 Self::live_horizon(opened_at, expires_at, proved_at, until)?;
                 if account.slots.contains_key(&id) { return Err(Reject::Replay); }
                 let epoch = proved_at / self.policy.rate_window;
@@ -265,7 +266,7 @@ impl Model {
                 .filter(|slot| matches!(slot.phase, Phase::Prepared | Phase::Active))
                 .map(|slot| u128::from(slot.amount)).sum::<u128>());
             assert!(account.slots.values().all(|slot| slot.opened_at < slot.expires_at
-                && slot.expires_at <= 9_007_199_254_740_991));
+                && slot.expires_at < self.policy.policy_valid_until));
             assert_eq!(account.admissions as usize, account.slots.values()
                 .filter(|slot| slot.turn_epoch == account.epoch).count());
             assert!(account.admissions <= self.policy.admission_limit_at(account.created_at, now).unwrap());
@@ -618,6 +619,32 @@ fn tuning_preserves_existing_activation_and_answer_windows() {
     assert_eq!(prepared.run(70, Action::Activate(1), 120), Err(Reject::Expired));
     prepared.run(70, Action::CancelPrepared(1), 120).unwrap();
     prepared.invariants(120);
+}
+
+#[test]
+fn reservations_leave_a_refund_interval_before_policy_expiry_or_change_nothing() {
+    for policy_end in [119, 120] {
+        let mut model = single(AccountPolicy { policy_valid_until: policy_end, ..policy() });
+        let before = model.clone();
+        assert_eq!(model.policy.reservation_deadline(100), Err(cfrm::Error::Expired));
+        assert_eq!(model.run(70, Action::Reserve(1, Role::Outgoing, 100), 100), Err(Reject::Expired));
+        assert_eq!(model, before);
+    }
+
+    let mut just_before = single(AccountPolicy { policy_valid_until: 121, ..policy() });
+    assert_eq!(just_before.policy.reservation_deadline(100).unwrap(), 120);
+    active(&mut just_before, 70, 1, Role::Outgoing, 100);
+    assert_eq!(just_before.accounts[&7].slots[&1].expires_at, 120);
+    just_before.run(70, Action::Expire(1), 120).unwrap();
+    assert_eq!((just_before.accounts[&7].available, just_before.accounts[&7].locked), (3, 0));
+    just_before.invariants(120);
+
+    let mut later = single(AccountPolicy { policy_valid_until: 141, abandon_after: 40, ..policy() });
+    active(&mut later, 70, 1, Role::Outgoing, 100);
+    let before = later.clone();
+    assert_eq!(later.run(70, Action::Reserve(2, Role::Outgoing, 101), 101), Err(Reject::Expired));
+    assert_eq!(later, before); // No debit, admission turn, new slot or deadline change.
+    later.invariants(101);
 }
 
 #[test]

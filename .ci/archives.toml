@@ -1,7 +1,7 @@
 schema = 1
 
 [archives.cmsg]
-revision = "80bbcf30e777b56a9ce6f8ea4a261f440c349eb0"
+revision = "ef1483c0a709e86975c44f6f8c84e833e7aa6ac4"
 archive_variable = "CMSG_SOURCE_ARCHIVE"
 digest_variable = "CMSG_SOURCE_SHA256"
 workflows = ["private-accounting"]

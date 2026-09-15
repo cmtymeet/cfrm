@@ -2,7 +2,7 @@ import { Noir } from '@noir-lang/noir_js';
 import { UltraHonkBackend, UltraHonkVerifierBackend } from '@aztec/bb.js';
 import { OPTIONS, hex, unhex, random, sha, canonicalSignature, be, memberBytes } from '../common.mjs';
 import { fieldBytes, FR_MODULUS } from '../hashes.mjs';
-import { ACCOUNT_MODE, accountHashes, checkpointFromVerified, noirInput, receiptBytes, receiptDigest, ackBytes, SparseTree } from './hashes.mjs';
+import { ACCOUNT_MODE, accountHashes, checkpointFromVerified, noirInput, receiptBytes, receiptDigest, ackBytes, SparseTree, policyDigest } from './hashes.mjs';
 import { AccountWitness, statementBytes, publicInputValues, PUBLIC_INPUT_COUNT, validityHorizon } from './witness.mjs';
 import { runPeerReservationContract } from '../peer-reservation/browser.mjs';
 
@@ -19,7 +19,7 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   const configuration = await (await fetch('/test-config.json')).json();
   if (!['answer','close'].includes(configuration.accountScenario)) throw new Error('Explicit synthetic scenario required');
   metrics.accountScenario = configuration.accountScenario;
-  const hashes = accountHashes(api), policy = manifest.accountPolicy;
+  const hashes = accountHashes(api); let policy = manifest.accountPolicy;
   if (!policy) throw new Error('No independently pinned account policy');
   if (policy.newcomerAdmissions > 16) throw new Error('Synthetic counter contract exceeds bounded execution; this is not a product limit');
   // Fixture scope and times, not product parameters. The native response must
@@ -32,7 +32,8 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
     const secret = random(); holders.push({ key, raw: raw.slice(1), secret, secretHash: await hashes.secretHash(community, secret) });
   }
   stage('actual-cmsg-enrollment');
-  const response = await post({ command: 'enroll', keys: holders.map(h => ({ accountKey: hex(h.raw), secretHash: hex(h.secretHash) })), peerExpires: 200 });
+  const response = await post({ command: 'enroll', keys: holders.map(h => ({ accountKey: hex(h.raw), secretHash: hex(h.secretHash) })),
+    peerExpires: configuration.accountScenario === 'answer' ? 200 : 10000 });
   assert(response.ok, 'actual cmsg root/device delegations accepted');
   const enrolled = response.value;
   assert(enrolled.community === hex(community) && enrolled.context.communityId === 'synthetic-community', 'actual cmsg fixture community is pinned');
@@ -51,6 +52,7 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
     contactPolicy: unhex(enrolled.contactPolicyDigest), openedAt: 100n };
   const gate = await post({ command: 'prepareGate' });
   assert(gate.ok, 'native cmsg prepares its own authenticated contexts and fresh peer challenges');
+  context.expiresAt = BigInt(gate.value.outgoing.expected.expiresAt);
   const ledgerPost = async input => {
     const response = await fetch('/account-ledger', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
     if (!response.ok) throw new Error('Real account ledger bridge request failed'); return response.json();
@@ -119,14 +121,14 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   }
   async function present(state, event, nativeContext, label) {
     const pin = manifest.peerReservation;
-    if (pin?.mode !== 'peer-reservation-v2' || pin.publicInputs !== 388 || !pin.sharesAccountSetup
+    if (pin?.mode !== 'peer-reservation-v3' || pin.publicInputs !== 389 || !pin.sharesAccountSetup
         || Number(pin.stats.numGatesDyadic) + 1 > manifest.numPoints) throw new Error('Pinned peer circuit/setup contract');
     const accountAcceptance = acceptedStates.get(hex(fieldBytes(state.commitment)));
     if (!accountAcceptance) throw new Error('No real acceptance for private opening');
     const ownEntry = checkpoint.entries.find(entry => equal(entry.member, state.owner.member));
     const device = enrolled.entries.find(entry => equal(memberBytes(entry.memberId), state.owner.member));
     if (!ownEntry || !device || !equal(memberBytes(device.originalDelegation.authorization.devicePublicKey), Uint8Array.from(nativeContext.devicePublicKey))) throw new Error('Native expected device differs from retained enrollment');
-    const expected = { ...nativeContext.expected, ownerAuthority: Array.from(fieldBytes(ownEntry.leaf)), accountPolicyDigest: Array.from(state.policyHash),
+    const expected = { ...nativeContext.expected, ownerAuthority: Array.from(fieldBytes(ownEntry.leaf)), statePolicyDigest: Array.from(state.statePolicyHash),
       stateVersion: Number(state.version), stateCommitment: Array.from(fieldBytes(state.commitment)) };
     const result = await runPeerReservationContract({ api, state, event, accountAcceptance,
       circuitBytes: await bytes('/peer-reservation/circuit.json'), verificationKey: await bytes('/peer-reservation/vk.bin'),
@@ -167,6 +169,14 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   let recipient = await prove(genesis[1], 1, 'proved recipient lifetime genesis');
   const outgoing = await sender.reserve({ peerIndex: 1, role: 0, ...context, now: 100 });
   await mutate(outgoing, 'reservation cannot inflate its configured amount', input => { input.slot.amount += 1n; });
+  await mutate(outgoing, 'coherent outgoing reservation cannot backdate its fixed waiting period', async input => {
+    input.slot.admitted_at = 99n; input.slot.expires_at = 599n;
+    const changedSlot = structuredClone(outgoing.next.slots.get(outgoing.event.toString()));
+    changedSlot.admittedAt = 99n; changedSlot.expiresAt = 599n;
+    const changed = await outgoing.next.outgoing.update(outgoing.event, await hashes.obligation(outgoing.event, changedSlot, 1));
+    const opening = structuredClone(outgoing.next.opening); opening.outgoingRoot = changed.next.root;
+    input.next_state = fieldBytes(await outgoing.next.commit(opening, outgoing.next.version));
+  });
   await mutate(outgoing, 'reservation cannot hide negative available credit', input => { input.old.available = 0n; });
   await mutate(outgoing, 'reservation rejects changed registered owner secret', input => { input.owner_secret = holders[1].secret; });
   await mutate(outgoing, 'insertion rejects append path from before predecessor update', input => {
@@ -201,12 +211,27 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
     recipient = await prove(await recipient.activate(secondary.event, 100), 1, 'proved independent outgoing slot activation for later abandonment');
   }
   const incomingPresentation = await present(recipient, incoming.event, gate.value.incoming, 'original recipient');
+  const tuned = await ledgerPost({ action: 'tuneWaitingPeriod' });
+  assert(tuned.ok && tuned.value.policy.abandonAfter === 900, 'actual operator tuning changes only future reservation waiting periods');
+  const senderBeforeTune = sender.commitment, recipientBeforeTune = recipient.commitment;
+  sender = await sender.withPolicy(tuned.value.policy); recipient = await recipient.withPolicy(tuned.value.policy);
+  policy = tuned.value.policy;
+  const adopted = await (await genesis[1].next.withPolicy(policy)).reserve({ peerIndex: 0, role: 1, ...context, now: 100 });
+  await noir.execute(noirInput(adopted.input));
+  assert(adopted.next.slots.get(adopted.event.toString()).expiresAt === 600n,
+    'ACVM incoming reservation adopts the authenticated older lease after current waiting-period tuning');
+  assert(sender.commitment === senderBeforeTune && recipient.commitment === recipientBeforeTune
+    && sender.slots.get(outgoing.event.toString()).expiresAt === 600n
+    && recipient.slots.get(incoming.event.toString()).expiresAt === 600n, 'live tuning preserves accepted openings and original shared expiry');
+  let immutableRejected = false;
+  try { await sender.withPolicy({ ...policy, policyRevision: policy.policyRevision + 1 }); } catch { immutableRejected = true; }
+  assert(immutableRejected, 'waiting-period reload cannot reinterpret immutable economic policy or revision');
   assert((await post({ command: 'bindGate', outgoingPresentation, incomingPresentation })).ok,
-    'native cmsg independently verifies both real Active proofs and binds protected release');
+    'native cmsg verifies original Active proofs after tuning and preserves their original release deadline');
   const secondaryRoot = recipient.outgoing.root;
   stage('actual-cmsg-' + configuration.accountScenario);
-  // Produce the actual decision while both owners can authorize their named
-  // updates. Recipient settlement still runs after the sender expires.
+  // Answer retains the expired-sender acknowledgment case. In Close, the sender
+  // has a longer genuine fixture authority so its deadline refund can be proved.
   const prepared = await post(configuration.accountScenario === 'answer' ? { command: 'answer' } : { command: 'close', now: 100 });
   assert(prepared.ok, 'actual durable cmsg recipient decision exists');
   const message = unhex(prepared.value.signingBytes);
@@ -232,32 +257,26 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
     completeAck = { ...preparedAck.value.acknowledgment, signature: Array.from(acknowledgment.signature) };
     assert((await post({ command: 'verifyAcknowledgment', acknowledgment: completeAck, now: 100 })).ok, 'Rust verifies browser-signed sender acknowledgment');
   }
-  const settledSender = await sender.settle(outgoing.event, resolution, undefined, 100);
   const senderAmount = BigInt(policy.outgoingReservation);
-  const senderRefund = configuration.accountScenario === 'answer' ? senderAmount : 0n;
-  assert(settledSender.next.opening.available === sender.opening.available + senderRefund
+  if (configuration.accountScenario === 'answer') {
+  const settledSender = await sender.settle(outgoing.event, resolution, undefined, 100);
+  assert(settledSender.next.opening.available === sender.opening.available + senderAmount
     && settledSender.next.opening.reserved === sender.opening.reserved - senderAmount,
-  'actual ' + configuration.accountScenario + ' has the exact sender refund/burn');
+  'confirmed Answer returns the exact sender bond early');
   await mutate(settledSender, 'sender cannot self-sign a recipient resolution', async input => {
     input.resolution.signature = canonicalSignature(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, holders[0].key.privateKey, message));
   });
   await mutate(settledSender, 'settlement rejects high-S receipt signatures', input => { input.resolution.signature = highS(input.resolution.signature); });
-  await mutate(settledSender, 'coherent successor cannot swap Answer refund and Close burn', async input => {
+  await mutate(settledSender, 'coherent successor cannot burn the refundable sender bond', async input => {
     const opening = structuredClone(settledSender.next.opening);
-    opening.available += configuration.accountScenario === 'close' ? senderAmount : -senderAmount;
+    opening.available -= senderAmount;
     input.next_state = fieldBytes(await settledSender.next.commit(opening, settledSender.next.version));
   });
   await mutate(settledSender, 'settlement cannot retain the resolved reservation amount', async input => {
     const opening = structuredClone(settledSender.next.opening); opening.reserved += senderAmount;
     input.next_state = fieldBytes(await settledSender.next.commit(opening, settledSender.next.version));
   });
-  if (configuration.accountScenario === 'close' && settledSender.next.opening.available > 0n) {
-    await mutate(settledSender, 'Close burn cannot exceed the exact policy reservation', async input => {
-      const opening = structuredClone(settledSender.next.opening); opening.available -= 1n;
-      input.next_state = fieldBytes(await settledSender.next.commit(opening, settledSender.next.version));
-    });
-  }
-  sender = await prove(settledSender, 0, 'proved outgoing actual-' + configuration.accountScenario + ' settlement');
+  sender = await prove(settledSender, 0, 'proved outgoing confirmed-Answer refund');
   let secondDecisionRejected = false;
   try { await sender.settle(outgoing.event, { ...resolution, kind: resolution.kind === 1 ? 2 : 1 }, undefined, 100); }
   catch { secondDecisionRejected = true; }
@@ -278,12 +297,27 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
     input.next_state = fieldBytes(await sender.commit(opening, current.next_version));
   });
   assert((await post({ command: 'advance', now: 300 })).ok, 'native fixture advances its trusted test clock');
+  } else {
+    let rejectedClose = false;
+    try { await sender.settle(outgoing.event, resolution, undefined, 100); } catch { rejectedClose = true; }
+    assert(rejectedClose, 'genuine recipient Close cannot change the sender fixed refund date');
+    const attempt = await sender.settle(outgoing.event, { ...resolution, kind: 1 }, undefined, 100);
+    await mutate(attempt, 'circuit rejects genuine Close as an early outgoing refund', input => { input.resolution.kind = 2; });
+    await mutate(attempt, 'circuit rejects genuine Close as an early outgoing burn', async input => {
+      input.resolution.kind = 2;
+      const opening = structuredClone(attempt.next.opening); opening.available -= senderAmount;
+      input.next_state = fieldBytes(await attempt.next.commit(opening, attempt.next.version));
+    });
+    assert(sender.slots.get(outgoing.event.toString()).phase === 2 && sender.opening.reserved === senderAmount,
+      'sender remains Active and reserved after recipient Close');
+  }
   if (completeAck) {
     assert((await post({ command: 'verifyHistoricalAcknowledgment', acknowledgment: completeAck, now: 300 })).ok, 'native historical acknowledgment retains exact expired sender authority');
     assert(!(await post({ command: 'verifyAcknowledgment', acknowledgment: completeAck, now: 300 })).ok, 'current verifier does not silently authorize expired sender');
   }
   const pendingRecipient = recipient;
-  const settledRecipient = await recipient.settle(incoming.event, resolution, acknowledgment, 300);
+  const recipientSettlementTime = configuration.accountScenario === 'answer' ? 300 : 100;
+  const settledRecipient = await recipient.settle(incoming.event, resolution, acknowledgment, recipientSettlementTime);
   await mutate(settledRecipient, 'historical self receipt cannot replace its reserved owner authority', input => {
     input.receipt_owner_enrollment.delegation_digest[0] ^= 1;
   });
@@ -292,6 +326,7 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
     const raw = new Uint8Array(await crypto.subtle.exportKey('raw', renewedKey.publicKey)).slice(1);
     const synthetic = await constraintCheckpoint(1, { key: raw, start: 200n, delegationDigest: random() });
     const historicalSelf = structuredClone(settledRecipient.input);
+    historicalSelf.now = 300n; historicalSelf.valid_until = validityHorizon(300, policy);
     historicalSelf.enrollment_root = fieldBytes(synthetic.root);
     historicalSelf.owner_enrollment = enrollmentInput(synthetic.entries[1]);
     await noir.execute(noirInput(historicalSelf));
@@ -348,10 +383,11 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
     const changed = await pendingRecipient.incoming.update(incoming.event, await hashes.obligation(incoming.event,
       pendingRecipient.slots.get(incoming.event.toString()), 5));
     const opening = structuredClone(settledRecipient.next.opening);
-    opening.available = pendingRecipient.opening.available; opening.incomingRoot = changed.next.root;
+    opening.incomingRoot = changed.next.root;
     input.next_state = fieldBytes(await settledRecipient.next.commit(opening, settledRecipient.next.version));
   });
-  recipient = await prove(settledRecipient, 1, 'proved incoming actual-' + configuration.accountScenario + ' settlement after peer expiry');
+  recipient = await prove(settledRecipient, 1, configuration.accountScenario === 'answer'
+    ? 'proved incoming Answer settlement after peer expiry' : 'proved recipient Close refunds its bond immediately');
   assert(recipient.outgoing.root === secondaryRoot && recipient.opening.reserved === BigInt(policy.outgoingReservation), 'unrelated outgoing obligation survives recipient settlement');
   let duplicateRejected = false;
   try { await recipient.reserve({ peerIndex: 0, role: 0, ...context, now: 300 }); } catch { duplicateRejected = true; }
@@ -386,19 +422,60 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
     });
   } else {
     assert((await post({ command: 'advance', now: 600 })).ok, 'native fixture advances to the pinned abandonment/refill time');
+    const senderExpiry = await sender.expire(outgoing.event, 600);
+    assert(senderExpiry.next.opening.available === sender.opening.available + senderAmount
+      && senderExpiry.next.opening.reserved === sender.opening.reserved - senderAmount,
+    'sender receives its exact bond at the original deadline despite the longer current wait');
+    const withoutClose = structuredClone(senderExpiry.input);
+    withoutClose.resolution.signature.fill(0);
+    withoutClose.peer_enrollment.end = 100n; // No current peer authority or signature is required.
+    await noir.execute(noirInput(withoutClose));
+    const deliveredClose = structuredClone(withoutClose);
+    Object.assign(deliveredClose.resolution, { kind: resolution.kind, issued_at: resolution.issuedAt,
+      history_digest: resolution.historyDigest, ed25519_receipt_digest: resolution.ed25519ReceiptDigest, signature: resolution.signature });
+    await noir.execute(noirInput(deliveredClose));
+    assert(equal(withoutClose.next_state, deliveredClose.next_state), 'withholding or delivering genuine Close produces the same deadline refund without peer eligibility');
+    await mutate(senderExpiry, 'sender expiry cannot run before the original deadline', input => { input.now = 599n; input.valid_until = validityHorizon(599, policy); });
+    await mutate(senderExpiry, 'changed slot expiry cannot shorten the original fixed wait', input => { input.slot.expires_at = 599n; });
+    await mutate(senderExpiry, 'changed slot expiry cannot extend the original fixed wait', input => { input.slot.expires_at = 700n; });
+    const shorter = await sender.withPolicy({ ...policy, abandonAfter: 100 });
+    const shortenedAttempt = await shorter.expire(outgoing.event, 600);
+    await mutate(shortenedAttempt, 'a shorter current wait cannot refund an old slot early', input => { input.now = 300n; input.valid_until = validityHorizon(300, policy); });
+    sender = await prove(senderExpiry, 0, 'proved sender fixed-deadline refund after recipient Close');
+    await mutate(senderExpiry, 'coherent expired tombstone cannot refund twice', async input => {
+      const current = sender.input(random(), 600);
+      Object.assign(input, { old: current.old, new_blind: current.new_blind, previous_state: current.previous_state,
+        previous_version: current.previous_version, next_version: current.next_version });
+      input.slot.phase = 5; input.own_map = sender.outgoing.witness(sender.outgoing.find(outgoing.event)[0]);
+      const opening = structuredClone(sender.opening); opening.available += senderAmount; opening.blind = current.new_blind;
+      input.next_state = fieldBytes(await sender.commit(opening, current.next_version));
+    });
+    await mutate(senderExpiry, 'expired tombstone rejects a later recipient-signed Answer refund', async input => {
+      const current = sender.input(random(), 600), later = { ...resolution, kind: 1, issuedAt: 600n };
+      later.signature = canonicalSignature(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, holders[1].key.privateKey,
+        receiptBytes(community, checkpoint.entries[1].member, checkpoint.entries[0].member,
+          sender.slots.get(outgoing.event.toString()), checkpoint.entries[1].delegationDigest, later)));
+      Object.assign(input, { action: 3, old: current.old, new_blind: current.new_blind, previous_state: current.previous_state,
+        previous_version: current.previous_version, next_version: current.next_version });
+      input.slot.phase = 5; input.own_map = sender.outgoing.witness(sender.outgoing.find(outgoing.event)[0]);
+      Object.assign(input.resolution, { kind: 1, issued_at: later.issuedAt, history_digest: later.historyDigest,
+        ed25519_receipt_digest: later.ed25519ReceiptDigest, signature: later.signature });
+      const opening = structuredClone(sender.opening); opening.available += senderAmount; opening.blind = current.new_blind;
+      input.next_state = fieldBytes(await sender.commit(opening, current.next_version));
+    });
     const expired = await recipient.expire(secondary.event, 600);
-    assert(expired.next.opening.available === recipient.opening.available
-      && expired.next.opening.reserved === recipient.opening.reserved - BigInt(policy.outgoingReservation), 'outgoing abandonment spends the exact reservation');
+    assert(expired.next.opening.available === recipient.opening.available + BigInt(policy.outgoingReservation)
+      && expired.next.opening.reserved === recipient.opening.reserved - BigInt(policy.outgoingReservation), 'unanswered outgoing expiry refunds exactly once');
     await mutate(expired, 'outgoing expiry cannot run before the common deadline', input => { input.now = 599n; input.valid_until = validityHorizon(599, policy); });
-    await mutate(expired, 'outgoing expiry cannot refund available capacity', async input => {
-      const opening = structuredClone(expired.next.opening); opening.available += BigInt(policy.outgoingReservation);
+    await mutate(expired, 'outgoing expiry cannot burn the refundable bond', async input => {
+      const opening = structuredClone(expired.next.opening); opening.available -= BigInt(policy.outgoingReservation);
       input.next_state = fieldBytes(await expired.next.commit(opening, expired.next.version));
     });
     await mutate(expired, 'expiry cannot reset admission throughput', async input => {
       const opening = structuredClone(expired.next.opening); opening.admissions = 0n;
       input.next_state = fieldBytes(await expired.next.commit(opening, expired.next.version));
     });
-    recipient = await prove(expired, 1, 'proved expired outgoing obligation remains spent without a peer signature');
+    recipient = await prove(expired, 1, 'proved unanswered outgoing refund without a peer signature');
     const refill = await recipient.refill(600);
     assert(refill.next.opening.available === recipient.opening.available + BigInt(policy.refillUnits)
       && refill.next.opening.frontier === validityHorizon(600, policy), 'due refill grants once and advances to the common committed horizon');
@@ -410,7 +487,7 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
       const opening = structuredClone(refill.next.opening); opening.frontier = recipient.opening.frontier;
       input.next_state = fieldBytes(await refill.next.commit(opening, refill.next.version));
     });
-    recipient = await prove(refill, 1, 'proved one bounded refill after permanent outgoing expenditure');
+    recipient = await prove(refill, 1, 'proved one bounded mature refill after fixed-wait refunds');
     await mutate(refill, 'coherent backdated proofs cannot refill twice inside the same acceptance window', async input => {
       const current = recipient.input(random(), 601);
       input.now = current.now; input.valid_until = current.valid_until;
@@ -423,6 +500,21 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
     assert(replay, 'same-time refill replay is rejected');
     let late = false; try { await recipient.settle(secondary.event, resolution, undefined, 600); } catch { late = true; }
     assert(late, 'terminal expiry cannot later receive an Answer or Close refund');
+    const fresh = await recipient.reserve({ peerIndex: 0, role: 0, nonce: random(), group: random(), contactPolicy: context.contactPolicy, now: 600 });
+    assert(fresh.next.slots.get(fresh.event.toString()).expiresAt === 1500n, 'new reservations alone adopt the tuned waiting period');
+    await execute(fresh, 'ACVM accepts a fresh reservation under the actual tuned policy');
+    let tailRejected = false;
+    try { await recipient.reserve({ peerIndex: 0, role: 0, nonce: random(), group: random(), contactPolicy: context.contactPolicy, now: 9100 }); } catch { tailRejected = true; }
+    assert(tailRejected, 'new reservation cannot promise a refund at or beyond immutable policy expiry');
+    await mutate(fresh, 'coherent circuit reservation rejects refund exactly at immutable policy expiry', async input => {
+      const atBoundary = { ...policy, abandonAfter: 9400 };
+      input.abandon_after = 9400n; input.policy_digest = await policyDigest(community, atBoundary);
+      input.slot.expires_at = 10000n;
+      const changedSlot = structuredClone(fresh.next.slots.get(fresh.event.toString())); changedSlot.expiresAt = 10000n;
+      const changed = await fresh.next.outgoing.update(fresh.event, await hashes.obligation(fresh.event, changedSlot, 1));
+      const opening = structuredClone(fresh.next.opening); opening.outgoingRoot = changed.next.root;
+      input.next_state = fieldBytes(await fresh.next.commit(opening, fresh.next.version));
+    });
   }
 
   // Coherent private forks are deliberately ACVM-only, not ledger evidence.

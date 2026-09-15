@@ -154,8 +154,9 @@ does not establish that binding.
 Both sending without a resolution and receiving without answering or closing
 consume the same member capacity under the [v2 policy](reciprocity-policy.md).
 Answer refunds both reservations on their respective accepted evidence;
-recipient Close refunds the recipient while the sender's cost remains spent.
-Outgoing expiry burns its reservation, and refill is bounded by shared capacity
+recipient Close refunds the recipient while the sender waits until the original
+deadline. Outgoing expiry returns that reservation once without a peer receipt,
+and refill is bounded by shared capacity
 and its authenticated frontier. The aggregate bearer gate above remains separate.
 All amounts and durations require explicit configuration.
 

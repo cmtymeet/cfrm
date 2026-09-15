@@ -5,7 +5,7 @@ use p2hash::poseidon2::Poseidon2;
 
 global ACCOUNT_DOMAIN: Field = 0x6366726d2e6163636f756e742d73746174652e7632;
 global LEGACY_DOMAIN: Field = 0x6366726d2e6163636f756e74696e672e706f736569646f6e322e7631;
-global PEER_DOMAIN: Field = 0x6366726d2e706565722d7265736572766174696f6e2e7632;
+global PEER_DOMAIN: Field = 0x6366726d2e706565722d7265736572766174696f6e2e7633;
 global SAFE: u64 = 9007199254740991;
 global LIMIT: u64 = 4294967296;
 
@@ -50,10 +50,10 @@ fn state_hash(community: [u8; 32], owner: [u8; 32], policy: [u8; 32],
         state.created_at as Field, state.admission_epoch as Field, state.admissions as Field, b[0], b[1]])
 }
 fn slot_hash(event: Field, role: u8, peer: [u8; 32], nonce: [u8; 32], group: [u8; 32],
-    contact_policy: [u8; 32], amount: u32, phase: u8, admitted_at: u64, peer_authority: Field, owner_authority: Field) -> Field {
+    contact_policy: [u8; 32], amount: u32, phase: u8, admitted_at: u64, expires_at: u64, peer_authority: Field, owner_authority: Field) -> Field {
     let p = limbs(peer); let n = limbs(nonce); let g = limbs(group); let c = limbs(contact_policy);
     hash([ACCOUNT_DOMAIN, 4, event, role as Field, p[0], p[1], n[0], n[1], g[0], g[1],
-        c[0], c[1], amount as Field, phase as Field, admitted_at as Field, peer_authority, owner_authority])
+        c[0], c[1], amount as Field, phase as Field, admitted_at as Field, expires_at as Field, peer_authority, owner_authority])
 }
 fn membership(root: Field, count: u64, event: Field, payload: Field, witness: Membership) {
     assert((count > 1) & (count <= LIMIT));
@@ -75,7 +75,7 @@ fn membership(root: Field, count: u64, event: Field, payload: Field, witness: Me
 fn main(
     community: pub [u8; 32], owner: pub [u8; 32], peer: pub [u8; 32], role: pub u8,
     nonce: pub [u8; 32], group: pub [u8; 32], contact_policy_digest: pub [u8; 32],
-    history_digest: pub [u8; 32], phase: pub u8, opened_at: pub u64, owner_authority: pub [u8; 32], account_policy_digest: pub [u8; 32],
+    history_digest: pub [u8; 32], phase: pub u8, opened_at: pub u64, expires_at: pub u64, owner_authority: pub [u8; 32], state_policy_digest: pub [u8; 32],
     state_version: pub u64, state_commitment: pub [u8; 32], challenge: pub [u8; 32],
     presentation_binding: pub [u8; 32],
     owner_secret: [u8; 32], opening: Opening, selected: Membership,
@@ -88,6 +88,7 @@ fn main(
     assert(challenge != [0; 32]);
     assert(nonce != [0; 32]);
     assert((amount > 0) & (opened_at > 0) & (opened_at <= SAFE));
+    assert((expires_at > opened_at) & (expires_at <= SAFE));
     assert(opening.frontier <= SAFE);
     assert((opening.created_at > 0) & (opening.created_at <= opening.frontier));
     assert(opening.admission_epoch <= SAFE);
@@ -96,12 +97,12 @@ fn main(
     assert((opening.pair_count > 0) & (opening.pair_count <= LIMIT));
     let state = field(state_commitment);
     assert(state != 0);
-    assert(state == state_hash(community, owner, account_policy_digest,
+    assert(state == state_hash(community, owner, state_policy_digest,
         secret_hash(community, owner_secret), state_version, opening));
     let event = event_key(community, owner, owner_secret, peer, nonce);
     assert(event != 0);
     let payload = slot_hash(event, role, peer, nonce, group, contact_policy_digest,
-        amount, phase, opened_at, peer_authority, field(owner_authority));
+        amount, phase, opened_at, expires_at, peer_authority, field(owner_authority));
     membership(if role == 0 { opening.outgoing_root } else { opening.incoming_root },
         if role == 0 { opening.outgoing_count } else { opening.incoming_count }, event, payload, selected);
     // History is authenticated presentation context, not a field in the old

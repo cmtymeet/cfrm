@@ -173,7 +173,7 @@ if test "$ACCOUNTING_MODE" = account-state-v2; then
   test -x "$ACCOUNTING_LEDGER_FIXTURE"
   sha256sum "$ACCOUNTING_LEDGER_FIXTURE" > "$artifact_dir/ledger-fixture.sha256"
   cargo fmt --manifest-path ../../Cargo.toml
-  tar --create --file "$artifact_dir/formatted-ledger-source.tar" --directory ../.. src/accounting.rs src/accounting_ledger.rs examples/account_ledger_fixture.rs
+  tar --create --file "$artifact_dir/formatted-ledger-source.tar" --directory ../.. src/accounting.rs src/accounting_policy.rs src/accounting_ledger.rs src/accounting_ledger/tuning.rs examples/account_ledger_fixture.rs
 else
   timeout 1200 cargo build --locked --manifest-path native/Cargo.toml --release \
     2>&1 | tee "$artifact_dir/native-build.log"

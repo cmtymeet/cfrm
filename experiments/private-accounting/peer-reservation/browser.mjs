@@ -13,7 +13,7 @@ export async function runPeerReservationContract({ api, circuitBytes, verificati
   const check = (condition, label) => { assert(condition, label); checks.push(label); };
   const candidate = await preparePeerReservation({ api, state, event,
     historyDigest: Uint8Array.from(context.expected.historyDigest), challenge: Uint8Array.from(context.expected.challenge) });
-  const record = { version: 2, statement: candidate.statement, proofScope: peerProofScope, proof: '00', accountAcceptance };
+  const record = { version: 3, statement: candidate.statement, proofScope: peerProofScope, proof: '00', accountAcceptance };
   const trusted = { ...context, peerProofScope, accountProofScope };
   await validateAcceptedContext(record, trusted, verifyAccountAcceptance);
   check(true, 'real operator acceptance matches the retained live reservation and expected cmsg context');
@@ -29,7 +29,7 @@ export async function runPeerReservationContract({ api, circuitBytes, verificati
   };
   await rejectsWitness('peer proof rejects a different registered owner secret', input => { input.owner_secret[0] ^= 1; });
   for (const [name, label] of [['owner','owner'], ['peer','peer'], ['nonce','introduction nonce'], ['group','MLS group'],
-    ['contact_policy_digest','contact policy'], ['history_digest','history context'], ['account_policy_digest','account policy'],
+    ['contact_policy_digest','contact policy'], ['history_digest','history context'], ['state_policy_digest','immutable account policy'],
     ['challenge','peer challenge'], ['owner_authority','original accounting device authority']]) {
     await rejectsWitness('peer proof rejects changed ' + label + ' with the original opening/binding', input => { input[name][0] ^= 1; });
   }
@@ -38,6 +38,7 @@ export async function runPeerReservationContract({ api, circuitBytes, verificati
   await rejectsWitness('peer proof rejects canceled phase', input => { input.phase = 4; });
   await rejectsWitness('peer proof rejects expired phase', input => { input.phase = 5; });
   await rejectsWitness('peer proof rejects a changed shared opened-at', input => { input.opened_at += 1n; });
+  await rejectsWitness('peer proof rejects a changed original expiry', input => { input.expires_at += 1n; });
   await rejectsWitness('peer proof rejects an altered accepted version', input => { input.state_version += 1n; });
   await rejectsWitness('peer proof rejects a changed Merkle sibling', input => { input.selected.path[0] += 1n; });
   await rejectsWitness('peer proof rejects changed authenticated leaf pointers', input => { input.selected.leaf[2] += 1n; });
@@ -65,7 +66,7 @@ export async function runPeerReservationContract({ api, circuitBytes, verificati
     let failed = false; try { await verifier.verify(changed, expected); } catch { failed = true; }
     check(failed, label);
   };
-  for (const name of ['challenge','historyDigest','owner','peer','nonce','group','contactPolicyDigest','ownerAuthority','accountPolicyDigest']) {
+  for (const name of ['challenge','historyDigest','owner','peer','nonce','group','contactPolicyDigest','ownerAuthority','statePolicyDigest']) {
     await rejectsHost('host rejects substituted ' + name, changed => { changed.statement[name][0] ^= 1; });
   }
   await rejectsHost('host rejects a changed signed acceptance', changed => { changed.accountAcceptance.requestDigest[0] ^= 1; });
@@ -73,7 +74,7 @@ export async function runPeerReservationContract({ api, circuitBytes, verificati
   await rejectsHost('host rejects a different peer verifier pin', changed => { changed.proofScope.verifyingKeyDigest[0] ^= 1; });
   const expired = structuredClone(context); expired.now = context.accountPolicy.policyValidUntil;
   await rejectsHost('host rejects expired current policy', () => {}, expired);
-  const expiredLease = structuredClone(context); expiredLease.now = context.expected.openedAt + context.accountPolicy.abandonAfter;
+  const expiredLease = structuredClone(context); expiredLease.now = context.expected.expiresAt;
   await rejectsHost('host rejects an expired common introduction lease', () => {}, expiredLease);
   const fresh = structuredClone(context); fresh.expected.challenge[0] ^= 1;
   await rejectsHost('old valid proof cannot satisfy a new verifier challenge', () => {}, fresh);

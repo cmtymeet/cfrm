@@ -20,7 +20,11 @@ fn stored(path: &Path) -> Vec<Vec<String>> {
     .collect()
 }
 
-fn with_policy(mut request: AccountRequest, account: &AccountPolicy, f: &Fixture) -> AccountRequest {
+fn with_policy(
+    mut request: AccountRequest,
+    account: &AccountPolicy,
+    f: &Fixture,
+) -> AccountRequest {
     request.statement.policy = account.clone();
     request.statement.policy_digest = account.digest(&request.statement.community).unwrap();
     request.statement.valid_until = account.proof_valid_until(request.statement.now).unwrap();
@@ -35,37 +39,72 @@ fn invalid_tuning_revision_clock_and_storage_failure_are_atomic() {
     let f = Fixture::new();
     let mut ledger = open(&path, &f, StorageOnlyVerifier::default());
     ledger.admit_checkpoint(0, fr(8)).unwrap();
-    ledger.apply(&f.grant(7, &f.device), &f.authorize(7, &f.device), &genesis(&f), || 120).unwrap();
+    ledger
+        .apply(
+            &f.grant(7, &f.device),
+            &f.authorize(7, &f.device),
+            &genesis(&f),
+            || 120,
+        )
+        .unwrap();
     let before = stored(&path);
     let tuning = ledger.waiting_period().unwrap();
     for seconds in [0, 999, 9_007_199_254_740_992] {
-        assert_eq!(ledger.update_waiting_period(0, seconds, || 130), Err(Error::InvalidInput));
+        assert_eq!(
+            ledger.update_waiting_period(0, seconds, || 130),
+            Err(Error::InvalidInput)
+        );
         assert_eq!(ledger.waiting_period().unwrap(), tuning);
         assert_eq!(stored(&path), before);
     }
     // A valid integer still cannot promise a refund at/after policy expiry.
     for seconds in [1870, 1900] {
-        assert_eq!(ledger.update_waiting_period(0, seconds, || 130), Err(Error::Expired));
+        assert_eq!(
+            ledger.update_waiting_period(0, seconds, || 130),
+            Err(Error::Expired)
+        );
         assert_eq!(ledger.waiting_period().unwrap(), tuning);
         assert_eq!(stored(&path), before);
     }
-    assert_eq!(ledger.update_waiting_period(1, 1500, || 130), Err(Error::PolicyMismatch));
-    assert_eq!(ledger.update_waiting_period(0, 1500, || 119), Err(Error::ClockRollback));
+    assert_eq!(
+        ledger.update_waiting_period(1, 1500, || 130),
+        Err(Error::PolicyMismatch)
+    );
+    assert_eq!(
+        ledger.update_waiting_period(0, 1500, || 119),
+        Err(Error::ClockRollback)
+    );
     let call = Cell::new(0);
-    assert_eq!(ledger.update_waiting_period(0, 1500, || {
-        let n = call.get(); call.set(n + 1); if n == 0 { 130 } else { 129 }
-    }), Err(Error::ClockRollback));
-    assert_eq!(ledger.update_waiting_period(0, 1500, || 2000), Err(Error::Expired));
+    assert_eq!(
+        ledger.update_waiting_period(0, 1500, || {
+            let n = call.get();
+            call.set(n + 1);
+            if n == 0 {
+                130
+            } else {
+                129
+            }
+        }),
+        Err(Error::ClockRollback)
+    );
+    assert_eq!(
+        ledger.update_waiting_period(0, 1500, || 2000),
+        Err(Error::Expired)
+    );
     assert_eq!(ledger.waiting_period().unwrap(), tuning);
     assert_eq!(stored(&path), before);
 
     let db = Connection::open(&path).unwrap();
     // Reject the clock write after config has changed inside the transaction.
     db.execute_batch("CREATE TRIGGER reject_tuning_clock BEFORE UPDATE OF clock_floor ON cfrm_accounts_config BEGIN SELECT RAISE(ABORT,'synthetic storage failure'); END;").unwrap();
-    assert_eq!(ledger.update_waiting_period(0, 1500, || 130), Err(Error::Storage));
+    assert_eq!(
+        ledger.update_waiting_period(0, 1500, || 130),
+        Err(Error::Storage)
+    );
     assert_eq!(ledger.waiting_period().unwrap(), tuning);
     assert_eq!(stored(&path), before);
-    db.execute_batch("DROP TRIGGER reject_tuning_clock;").unwrap();
+    db.execute_batch("DROP TRIGGER reject_tuning_clock;")
+        .unwrap();
     let changed = ledger.update_waiting_period(0, 1500, || 130).unwrap();
     assert_eq!((changed.revision, changed.seconds), (1, 1500));
     assert_ne!(changed.policy_digest, tuning.policy_digest);
@@ -101,7 +140,10 @@ fn restart_loads_durable_wait_and_preserves_genesis_and_exact_old_retry() {
     second_genesis.expires_at = 251;
     let second_genesis = with_policy(second_genesis, reopened.account_policy(), &f);
     let before = stored(&path);
-    assert_eq!(reopened.apply(&g, &a, &second_genesis, || 201), Err(Error::Replay));
+    assert_eq!(
+        reopened.apply(&g, &a, &second_genesis, || 201),
+        Err(Error::Replay)
+    );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     assert_eq!(stored(&path), before);
 }
@@ -121,15 +163,32 @@ fn state_binding_and_restart_pin_every_policy_field_except_wait() {
     let before = stored(&path);
     // This includes future additions to the public policy unless explicitly
     // designated as mutable. These fixture values allow each increment.
-    for field in encoded.as_object().unwrap().keys().filter(|name| name.as_str() != "abandonAfter") {
+    for field in encoded
+        .as_object()
+        .unwrap()
+        .keys()
+        .filter(|name| name.as_str() != "abandonAfter")
+    {
         let mut changed = encoded.clone();
         let key = field.as_str();
         changed[key] = serde_json::Value::from(changed[key].as_u64().unwrap() + 1);
         let changed: AccountPolicy = serde_json::from_value(changed).unwrap();
-        assert_ne!(changed.state_digest(&community).unwrap(), tuned.state_policy_digest, "{field}");
-        let supplied = AccountLedgerPolicy { account: changed, ..policy() };
-        let reopened = AccountLedger::open(&path, f.trust.clone(), supplied,
-            StorageOnlyVerifier::default(), SigningKey::from_bytes(&[9; 32]));
+        assert_ne!(
+            changed.state_digest(&community).unwrap(),
+            tuned.state_policy_digest,
+            "{field}"
+        );
+        let supplied = AccountLedgerPolicy {
+            account: changed,
+            ..policy()
+        };
+        let reopened = AccountLedger::open(
+            &path,
+            f.trust.clone(),
+            supplied,
+            StorageOnlyVerifier::default(),
+            SigningKey::from_bytes(&[9; 32]),
+        );
         assert!(matches!(reopened, Err(Error::PolicyMismatch)), "{field}");
         assert_eq!(stored(&path), before);
     }
@@ -152,13 +211,22 @@ fn stale_handles_and_old_proofs_reject_before_verify_then_reload_accepts_success
     let tuning = writer.update_waiting_period(0, 1500, || 130).unwrap();
     let old_proof = successor(&first, &f, 11);
     let before = stored(&path);
-    assert_eq!(stale.apply(&g, &a, &old_proof, || 130), Err(Error::PolicyMismatch));
-    assert_eq!(stale.update_waiting_period(0, 1700, || 130), Err(Error::PolicyMismatch));
+    assert_eq!(
+        stale.apply(&g, &a, &old_proof, || 130),
+        Err(Error::PolicyMismatch)
+    );
+    assert_eq!(
+        stale.update_waiting_period(0, 1700, || 130),
+        Err(Error::PolicyMismatch)
+    );
     assert_eq!(stored(&path), before);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     assert_eq!(stale.waiting_period().unwrap().revision, 0);
     assert_eq!(stale.reload_policy().unwrap(), tuning);
-    assert_eq!(stale.apply(&g, &a, &old_proof, || 130), Err(Error::PolicyMismatch));
+    assert_eq!(
+        stale.apply(&g, &a, &old_proof, || 130),
+        Err(Error::PolicyMismatch)
+    );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     let successor = with_policy(old_proof, stale.account_policy(), &f);
     let next = stale.apply(&g, &a, &successor, || 130).unwrap();
@@ -199,7 +267,10 @@ fn tuning_during_blocked_verification_rejects_the_stale_transition_atomically() 
             assert_eq!(stored(&path), after_tuning);
         });
         assert_eq!(slow.waiting_period().unwrap().revision, 0);
-        assert_eq!(slow.reload_policy().unwrap(), writer.waiting_period().unwrap());
+        assert_eq!(
+            slow.reload_policy().unwrap(),
+            writer.waiting_period().unwrap()
+        );
     }
 }
 
@@ -216,10 +287,21 @@ fn competing_tuning_connections_commit_exactly_one_expected_revision() {
         [left.join().unwrap(), right.join().unwrap()]
     });
     assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
-    assert_eq!(results.iter().filter(|result| matches!(result, Err(Error::PolicyMismatch))).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, Err(Error::PolicyMismatch)))
+            .count(),
+        1
+    );
     let winner = results.into_iter().find_map(Result::ok).unwrap();
     assert_eq!(winner.revision, 1);
-    assert_eq!(open(&path, &f, StorageOnlyVerifier::default()).waiting_period().unwrap(), winner);
+    assert_eq!(
+        open(&path, &f, StorageOnlyVerifier::default())
+            .waiting_period()
+            .unwrap(),
+        winner
+    );
     assert_eq!(first.reload_policy().unwrap(), winner);
     assert_eq!(second.reload_policy().unwrap(), winner);
 }

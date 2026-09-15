@@ -18,8 +18,8 @@ message was never received nor authorizes an account refund.
 | Prepared | Cancel | Return reserved units; retain event tombstone and consumed turn |
 | Active | Confirmed Answer within its proof validity window | Return the owner's reservation, with role-specific signed evidence |
 | Active incoming | Explicit recipient Close | Return the recipient's reservation |
-| Active outgoing | Authenticated recipient Close | Remove the reservation with its cost spent |
-| Active outgoing | Lease expires | Remove the reservation with its cost spent |
+| Active outgoing | Recipient Close | Remain reserved until the original deadline; Close is not an outgoing settlement |
+| Active outgoing | Original lease expires | Return the reservation exactly once, without requiring the recipient |
 | Active incoming | Silence, expiry or disconnect | Remain reserved until Answer or explicit Close |
 | Terminal event | Retry or another outcome | Exact accepted requests are idempotent; new settlement or reuse is rejected |
 
@@ -30,8 +30,10 @@ payload release. Thus cancelling Prepared cannot erase an already authorized
 delivery. Local flags such as “never sent” are not cancellation evidence.
 
 Both slots bind the same community, members, introduction nonce, group, contact
-policy and opening time. The opening time plus the common `abandonAfter` defines
-the lease. It is immutable after reservation. Peer-only presentations expose
+policy and opening time. The sender's opening time plus the current `abandonAfter` defines its original
+`expiresAt`, committed inside the slot. An incoming reservation copies the
+authenticated outgoing deadline. The deadline is immutable after reservation,
+even if the operating waiting period changes between those two reservations. Peer-only presentations expose
 this context to the counterpart; named operator updates must not contain it.
 
 A pending introduction belongs to the devices that reserved it. Its peer proof
@@ -41,6 +43,26 @@ and participate after the conversation is established. Moving an unresolved
 introduction to another device requires closure and fresh admission. Concurrent
 instances of one device must use a durable storage version check; copying or
 rolling back all trusted device storage is outside that guarantee.
+
+## A predictable waiting period
+
+The sender's recovery must not require meeting the recipient online again.
+Close and silence have identical sender-side refund timing. Otherwise a modified
+sender could hide a Close receipt and claim a cheaper timeout. Recipient Close
+immediately clears the incoming obligation and preserves its signed contact
+restriction; the sender's account slot can stay Active while cmsg marks that
+contact closed. Only confirmed Answer releases outgoing capacity early.
+
+A refund never authorizes another attempt against an unresolved introduction
+or an existing block. New nonces, replacement groups and sibling devices do not
+clear that history. Established conversation traffic remains outside this rule.
+
+The waiting period is an explicit operational tunable, not a fixed product
+constant. The [tuning contract](tuning.md) documents its validated live update,
+metrics and effect on future reservations. New reservations require a deadline
+strictly before policy expiry, leaving a usable interval for their refund proof.
+The recipient may still need to Close locally after the sender disappears;
+receiving without resolving messages continues to occupy the shared budget.
 
 ## One budget and one rate counter
 
@@ -96,10 +118,12 @@ committed in the reservation; it cannot replace current owner authorization.
 Reservation, activation and Answer require the entire proof validity window to
 fit inside the private lease. Configuration rejects `abandonAfter < rateWindow`.
 A final partial window may nevertheless be unusable;
-clients must leave enough time for proving and acceptance. Outgoing expiry is
-available at or after the lease deadline. Unclaimed late Answer evidence cannot
-become a stored refund coupon after expiry. An already accepted Answer cannot
-be reversed or settled again by a later Close.
+clients must leave enough time for proving and acceptance. Outgoing expiry
+returns its reservation at or after the original deadline,
+without a peer receipt. Expiry requires the client to prove the transition,
+possibly on its next login; the operator cannot edit a hidden balance directly.
+Unclaimed late Answer evidence cannot claim a second refund after expiry.
+An already accepted Answer cannot be reversed or settled again by a later Close.
 
 Atomic owner updates do not establish simultaneous settlement of both accounts
 or simultaneous network delivery. A peer can withhold the last acknowledgment.
@@ -119,25 +143,24 @@ through network delivery.
 ## Incentive bounds and limits
 
 The capacity invariant follows by induction over accepted transitions: Reserve
-moves units from `A` to `R`; a refund reverses that transfer; a burn decreases
-`R`; only bounded refill adds units. Increasing the capacity ceiling adds no
-units. Equivalently, available plus reserved plus permanently spent units equals
-initial credit plus accepted refill grants. The ledger's single-successor check
+moves units from `A` to `R`; a refund reverses that transfer; only bounded refill
+adds units. Increasing the capacity ceiling adds no units. Available plus
+reserved units equals initial credit plus accepted refill grants. The ledger's single-successor check
 prevents two devices from spending the same predecessor.
 
 For a root with window limit `K`, at most `K` new reservations can be accepted
 in that window, including canceled attempts and both directions. Refunds cannot
 increase this bound. Across a coalition of `N` admitted roots, the corresponding
-bound is at most `N × K`; eligibility therefore remains essential. Unsuccessful
-outgoing attempts permanently spend their configured cost and can continue only
-as initial credit and bounded refill permit. These are resource bounds against
+bound is at most `N × K`; eligibility therefore remains essential. Unanswered outgoing attempts occupy their configured capacity until their
+original deadline. Confirmed Answer can release that capacity early. Repeated
+unanswered attempts are bounded by this waiting time and the admission counter. These are resource bounds against
 strategic clients, not assumptions about their motives.
 
 - Disconnecting yields no accounting benefit. A successful “send then disappear”
-  consumes capacity and an admission turn.
+  occupies capacity until Answer or the original deadline and consumes a turn.
 - Ignoring admitted messages fills the same budget used to initiate contacts.
-  Refill cannot empty the inbox. Explicit Close clears it without rewarding the
-  unsuccessful sender.
+  Refill cannot empty the inbox. Explicit Close clears the incoming obligation
+  while the sender waits until its original refund deadline.
 - Refund loops cannot create units. Colluding members can exchange valid
   receipts, but their admission counts still bound the number of new encounters.
   No bonus is awarded for apparent sincerity, message length or distinct peers.
@@ -159,6 +182,11 @@ the stated model; actual circuit, ledger and browser tests establish their own
 implementation boundaries.
 
 ## Validation
+
+The fixed-wait refund, stored deadlines and live tuning change the previous
+relation. Their new CI results are pending; the archived runs below establish
+the earlier implementation only.
+
 
 The independent Rust model passed 13 tests, including 4,680 bounded transitions,
 on Crow9/54. This is bounded exploration plus the invariant argument above,

@@ -3,7 +3,7 @@
 import { UltraHonkVerifierBackend } from '@aztec/bb.js';
 import { OPTIONS, sha } from '../common.mjs';
 import { fieldValue } from '../hashes.mjs';
-import { policyDigest, POLICY_KEYS } from '../account-state/hashes.mjs';
+import { policyDigest, statePolicyDigest, POLICY_KEYS } from '../account-state/hashes.mjs';
 import { publicInputValues as accountPublicInputs, validityHorizon } from '../account-state/witness.mjs';
 import { EXPECTED_KEYS, bytes32, safeInteger, exact, equalBytes, publicInputValues } from './witness.mjs';
 
@@ -21,7 +21,7 @@ function sameScope(actual, expected) {
   if (!scopeKeys.every(key => equalBytes(actual[key], expected[key]))) throw new Error('Wrong pinned proof scope');
 }
 export async function validateAcceptedContext(record, trusted, verifyAccountAcceptance) {
-  if (record.version !== 2 || !exact(record, ['version','statement','proofScope','proof','accountAcceptance'])) throw new Error('Peer presentation envelope');
+  if (record.version !== 3 || !exact(record, ['version','statement','proofScope','proof','accountAcceptance'])) throw new Error('Peer presentation envelope');
   const s = record.statement, a = record.accountAcceptance, e = trusted.expected;
   publicInputValues(s);
   if (!exact(e, EXPECTED_KEYS)) throw new Error('Independently expected peer context required');
@@ -42,14 +42,16 @@ export async function validateAcceptedContext(record, trusted, verifyAccountAcce
   if (accepted.genesis || accepted.nextVersion !== accepted.previousVersion + 1
       || accepted.nextVersion !== s.stateVersion || !equalBytes(accepted.nextState, s.stateCommitment)
       || !equalBytes(accepted.owner, s.owner) || !equalBytes(accepted.community, s.community)
-      || !equalBytes(accepted.policyDigest, s.accountPolicyDigest)
       || !equalBytes(accepted.enrollmentRoot, Array.from(bytes32(trusted.enrollmentRoot)))) throw new Error('Acceptance does not certify presented state');
-  if (!exact(trusted.accountPolicy, policyKeys) || !policyKeys.every(key => accepted.policy[key] === trusted.accountPolicy[key])) throw new Error('Unpinned current account policy');
-  const digest = await policyDigest(bytes32(s.community), trusted.accountPolicy);
-  if (!equalBytes(digest, s.accountPolicyDigest) || now < BigInt(trusted.accountPolicy.policyValidFrom)
+  if (!exact(trusted.accountPolicy, policyKeys) || !policyKeys.filter(key => key !== 'abandonAfter').every(key => accepted.policy[key] === trusted.accountPolicy[key])) throw new Error('Unpinned immutable account policy');
+  const digest = await statePolicyDigest(bytes32(s.community), trusted.accountPolicy);
+  if (!equalBytes(await policyDigest(bytes32(s.community), accepted.policy), accepted.policyDigest)
+      || !equalBytes(await statePolicyDigest(bytes32(s.community), accepted.policy), digest)
+      || !equalBytes(digest, s.statePolicyDigest) || now < BigInt(trusted.accountPolicy.policyValidFrom)
       || now >= BigInt(trusted.accountPolicy.policyValidUntil)) throw new Error('Wrong or expired common policy');
   if (BigInt(accepted.validUntil) !== validityHorizon(accepted.now, trusted.accountPolicy)
-      || now < BigInt(s.openedAt) || now - BigInt(s.openedAt) >= BigInt(trusted.accountPolicy.abandonAfter)) throw new Error('Expired or mismatched common introduction lease');
+      || now < BigInt(s.openedAt) || now >= BigInt(s.expiresAt)
+      || s.expiresAt >= trusted.accountPolicy.policyValidUntil) throw new Error('Expired or mismatched original introduction lease');
   if (typeof verifyAccountAcceptance !== 'function') throw new Error('Real operator acceptance verifier unavailable');
   // This is a host cryptography boundary, not a prover-selected callback. The
   // adapter must call cfrm::accounting::verify_account_acceptance with the pinned operator.

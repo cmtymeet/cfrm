@@ -25,7 +25,7 @@ struct Opening {
 struct Obligation {
     role: u8, peer: [u8; 32], nonce: [u8; 32], group: [u8; 32],
     contact_policy: [u8; 32], amount: u32, phase: u8,
-    admitted_at: u64, peer_authority: Field, owner_authority: Field,
+    admitted_at: u64, expires_at: u64, peer_authority: Field, owner_authority: Field,
 }
 
 struct MapWitness {
@@ -102,11 +102,11 @@ fn verify_peer_authority(community: [u8; 32], slot: Obligation, peer: Enrollment
     }
 }
 
-fn policy_hash(community: [u8; 32], initial_credit: u32, maximum_available: u32,
+fn policy_bytes(community: [u8; 32], initial_credit: u32, maximum_available: u32,
     outgoing_reservation: u32, incoming_reservation: u32, revision: u64,
     valid_from: u64, valid_until: u64, newcomer_period: u64, rate_window: u64,
     newcomer_admissions: u32, maximum_admissions: u32, refill_period: u64,
-    refill_units: u32, abandon_after: u64) -> [u8; 32] {
+    refill_units: u32, abandon_after: u64) -> [u8; 140] {
     // Existing fields, then the seven v2 parameters in their fixed wire order.
     let prefix: [u8; 23] = [99,102,114,109,46,97,99,99,111,117,110,116,45,112,111,108,105,99,121,46,118,50,0];
     let mut bytes = [0; 140];
@@ -133,7 +133,17 @@ fn policy_hash(community: [u8; 32], initial_credit: u32, maximum_available: u32,
     for i in 0..8 { bytes[119+i] = refill[i]; bytes[131+i] = abandon[i]; }
     for i in 0..4 { bytes[127+i] = units[i]; }
     bytes[139] = 32;
-    digest(bytes)
+    bytes
+}
+
+fn state_policy_hash(bytes: [u8; 140]) -> [u8; 32] {
+    let prefix: [u8; 29] = [99,102,114,109,46,97,99,99,111,117,110,116,45,115,116,97,116,101,45,112,111,108,105,99,121,46,118,49,0];
+    let mut stable = [0; 138];
+    for i in 0..29 { stable[i] = prefix[i]; }
+    for i in 0..32 { stable[29+i] = bytes[23+i]; }
+    for i in 0..76 { stable[61+i] = bytes[55+i]; }
+    stable[137] = 32;
+    digest(stable)
 }
 
 fn state_hash(community: [u8; 32], owner: [u8; 32], policy: [u8; 32],
@@ -151,7 +161,7 @@ fn obligation_hash(event: Field, slot: Obligation, phase: u8) -> Field {
     let p = limbs(slot.peer); let n = limbs(slot.nonce); let g = limbs(slot.group);
     let c = limbs(slot.contact_policy);
     hash([DOMAIN, 4, event, slot.role as Field, p[0], p[1], n[0], n[1], g[0], g[1],
-        c[0], c[1], slot.amount as Field, phase as Field, slot.admitted_at as Field, slot.peer_authority, slot.owner_authority])
+        c[0], c[1], slot.amount as Field, phase as Field, slot.admitted_at as Field, slot.expires_at as Field, slot.peer_authority, slot.owner_authority])
 }
 
 fn receipt_bytes(community: [u8; 32], responder: [u8; 32], other: [u8; 32],
@@ -255,10 +265,12 @@ fn main(
     assert((refill_units > 0) & (refill_units <= initial_credit));
     let window_end = (now / rate_window + 1) * rate_window;
     assert(valid_until == if window_end < policy_valid_until { window_end } else { policy_valid_until });
-    assert(policy_hash(community, initial_credit, maximum_available,
+    let policy = policy_bytes(community, initial_credit, maximum_available,
         outgoing_reservation, incoming_reservation, policy_revision,
         policy_valid_from, policy_valid_until, newcomer_period, rate_window,
-        newcomer_admissions, maximum_admissions, refill_period, refill_units, abandon_after) == policy_digest);
+        newcomer_admissions, maximum_admissions, refill_period, refill_units, abandon_after);
+    assert(digest(policy) == policy_digest);
+    let state_policy = state_policy_hash(policy);
     assert((owner_secret != [0; 32]) & (new_blind != [0; 32]));
     let registered_secret = secret_hash(community, owner_secret);
     assert(registered_secret == field(owner_enrollment.secret_hash));
@@ -272,11 +284,11 @@ fn main(
             outgoing_root: empty, outgoing_count: 1, incoming_root: empty, incoming_count: 1,
             pair_root: empty, pair_count: 1, frontier: valid_until, created_at: valid_until,
             admission_epoch: now / rate_window, admissions: 0, blind: new_blind };
-        assert(state_hash(community, owner, policy_digest, registered_secret, 0, initial) == field(next_state));
+        assert(state_hash(community, owner, state_policy, registered_secret, 0, initial) == field(next_state));
     } else {
         assert(next_version == previous_version + 1);
         assert(new_blind != old.blind);
-        assert(state_hash(community, owner, policy_digest, registered_secret, previous_version, old) == field(previous_state));
+        assert(state_hash(community, owner, state_policy, registered_secret, previous_version, old) == field(previous_state));
         assert((old.created_at > 0) & (old.created_at <= old.frontier) & (old.frontier <= valid_until));
         let mature = if now >= old.created_at { now - old.created_at >= newcomer_period } else { false };
         let capacity = if mature { maximum_available } else { initial_credit };
@@ -293,6 +305,7 @@ fn main(
             assert((slot.role < 2) & (slot.peer != owner));
             assert((slot.nonce != [0; 32]) & (slot.group != [0; 32]) & (slot.contact_policy != [0; 32]));
             assert((slot.admitted_at > 0) & (slot.admitted_at <= now));
+            assert((slot.expires_at > slot.admitted_at) & (slot.expires_at < policy_valid_until));
             assert(slot.amount == amount);
         }
         let event = marker(community, owner, owner_secret, slot.peer, slot.nonce);
@@ -312,13 +325,16 @@ fn main(
         let mut admission_epoch = old.admission_epoch;
         let mut admissions = old.admissions;
         let mut issued: u32 = 0;
-        // Private and derived only from an authenticated settlement below.
-        // It is never a prover-selected amount or a public outcome signal.
-        let mut burned: u32 = 0;
         if action == 1 {
             // Both owners commit the original initiator's common opened-at.
-            assert((slot.phase == 1) & (now - slot.admitted_at < abandon_after));
-            assert(valid_until - slot.admitted_at <= abandon_after);
+            assert((slot.phase == 1) & (now < slot.expires_at));
+            assert(valid_until <= slot.expires_at);
+            if slot.role == 0 {
+                assert(slot.admitted_at == now);
+                assert(slot.expires_at == now + abandon_after);
+            }
+            // Incoming adopts the exact sender lease verified by the native
+            // peer gate. Its proof alone does not establish cross-owner consent.
             let count = if old.admission_epoch == epoch { old.admissions as u64 + 1 } else { 1 };
             assert(count <= admission_limit as u64);
             admission_epoch = epoch; admissions = count as u32;
@@ -359,8 +375,8 @@ fn main(
                 obligation_hash(event, slot, slot.phase), obligation_hash(event, slot, next_phase),
                 own_map.leaf, own_map.index, own_map.path);
             if action == 2 {
-                assert(now - slot.admitted_at < abandon_after);
-                assert(valid_until - slot.admitted_at <= abandon_after);
+                assert(now < slot.expires_at);
+                assert(valid_until <= slot.expires_at);
                 assert(settlement_marker == [0; 32]);
             } else if action == 4 {
                 // Before protected release only; the admission counter and
@@ -369,16 +385,21 @@ fn main(
                 reserved = old.reserved - amount as u128;
                 assert(event == field(settlement_marker));
             } else if action == 5 {
-                assert((slot.role == 0) & (now - slot.admitted_at >= abandon_after));
-                burned = amount;
+                assert((slot.role == 0) & (now >= slot.expires_at));
+                // The fixed wait refunds the bond regardless of whether a
+                // Close receipt was delivered. Admission throughput stays spent.
+                available = old.available + amount;
                 reserved = old.reserved - amount as u128;
                 assert(event == field(settlement_marker));
             } else {
                 if resolution.kind == 1 {
-                    assert(now - slot.admitted_at < abandon_after);
-                    assert(valid_until - slot.admitted_at <= abandon_after);
+                    assert(now < slot.expires_at);
+                    assert(valid_until <= slot.expires_at);
                 }
                 if slot.role == 0 {
+                    // Recipient Close does not change the outgoing refund date.
+                    // Only a confirmed Answer may settle this role early.
+                    assert(resolution.kind == 1);
                     verify_peer_authority(community, slot, peer_enrollment, field(enrollment_root), now, valid_until);
                 }
                 // Incoming owner closure has no current-eligibility dependency
@@ -394,17 +415,15 @@ fn main(
                     verify_acknowledgment(community, owner, slot, receipt_owner_enrollment,
                         peer_enrollment, resolution, acknowledgment, now);
                 }
-                // Recipient Close restores the recipient's reservation, while
-                // the initiator's already-debited cost remains spent. Answer
-                // restores either role's reservation; no extra reward exists.
-                burned = if (slot.role == 0) & (resolution.kind == 2) { amount } else { 0 };
-                available = old.available + (amount - burned);
+                // Incoming Close and confirmed Answer restore the exact bond.
+                // There is no additional reward or sender-selected burn.
+                available = old.available + amount;
                 reserved = old.reserved - amount as u128;
                 assert(event == field(settlement_marker));
             }
         }
         assert(available as u128 + reserved <= capacity as u128);
-        assert(available as u128 + reserved + burned as u128 == old.available as u128 + old.reserved + issued as u128);
+        assert(available as u128 + reserved == old.available as u128 + old.reserved + issued as u128);
         let successor = Opening { available, reserved,
             outgoing_root: if slot.role == 0 { changed_root } else { old.outgoing_root },
             outgoing_count: if slot.role == 0 { changed_count } else { old.outgoing_count },
@@ -412,6 +431,6 @@ fn main(
             incoming_count: if slot.role == 1 { changed_count } else { old.incoming_count },
             pair_root, pair_count, frontier, created_at: old.created_at,
             admission_epoch, admissions, blind: new_blind };
-        assert(state_hash(community, owner, policy_digest, registered_secret, next_version, successor) == field(next_state));
+        assert(state_hash(community, owner, state_policy, registered_secret, next_version, successor) == field(next_state));
     }
 }

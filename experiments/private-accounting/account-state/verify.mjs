@@ -5,7 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { Barretenberg, BackendType, UltraHonkVerifierBackend } from '@aztec/bb.js';
 import { OPTIONS, hex, unhex, sha } from '../common.mjs';
 import { fieldValue } from '../hashes.mjs';
-import { ACCOUNT_MODE, accountHashes, checkpointFromVerified, policyDigest, POLICY_KEYS } from './hashes.mjs';
+import { ACCOUNT_MODE, accountHashes, checkpointFromVerified, policyDigest, statePolicyDigest, POLICY_KEYS } from './hashes.mjs';
 import { publicInputValues, PUBLIC_INPUT_COUNT, validityHorizon } from './witness.mjs';
 
 const statementKeys = ['protocolVersion','community','owner','policyDigest','enrollmentRoot','now','validUntil','genesis',
@@ -27,7 +27,14 @@ export async function createAccountVerifier(manifestPath, trusted) {
   if (!trusted || !Array.isArray(trusted.acceptedTimes) || !trusted.acceptedTimes.length
       || trusted.acceptedTimes.length > 32 || !trusted.acceptedTimes.every(t => Number.isSafeInteger(t) && t > 0)) throw new Error('Trusted verification times required');
   const community = digestBytes(trusted.community), allowedTimes = new Set(trusted.acceptedTimes);
-  const expectedPolicy = await policyDigest(community, manifest.accountPolicy);
+  const immutable = await statePolicyDigest(community, manifest.accountPolicy);
+  const policies = trusted.acceptedPolicies ?? [manifest.accountPolicy];
+  if (!Array.isArray(policies) || !policies.length || policies.length > 16) throw new Error('Trusted policy history bound');
+  const approved = [];
+  for (const policy of policies) {
+    if (!exact(policy, policyKeys) || !equal(await statePolicyDigest(community, policy), immutable)) throw new Error('Trusted policy history changed immutable terms');
+    approved.push({ policy, digest: await policyDigest(community, policy) });
+  }
   const vk = new Uint8Array(await readFile(resolve(directory, 'vk.bin')));
   const circuit = new Uint8Array(await readFile(resolve(directory, 'circuit.json')));
   if (hex(await sha(vk)) !== manifest.vkSha256 || hex(await sha(circuit)) !== manifest.circuitSha256) throw new Error('Independent artifact pin mismatch');
@@ -56,8 +63,7 @@ export async function createAccountVerifier(manifestPath, trusted) {
         if (values.length !== PUBLIC_INPUT_COUNT || BigInt(s.validUntil) !== validityHorizon(s.now, manifest.accountPolicy)
             || !equal(s.community, Array.from(community))
             || !owners.has(hex(Uint8Array.from(s.owner))) || !allowedTimes.has(s.now)
-            || !policyKeys.every(k => s.policy[k] === manifest.accountPolicy[k])
-            || !equal(s.policyDigest, Array.from(expectedPolicy))
+            || !approved.some(entry => policyKeys.every(k => s.policy[k] === entry.policy[k]) && equal(s.policyDigest, entry.digest))
             || fieldValue(Uint8Array.from(s.enrollmentRoot)) !== checkpoint.root) throw new Error('Independent scope/policy/time/checkpoint mismatch');
         for (const name of ['previousState','nextState','settlementMarker']) fieldValue(Uint8Array.from(s[name]));
         if (fieldValue(Uint8Array.from(s.nextState)) === 0n) throw new Error('Zero successor');

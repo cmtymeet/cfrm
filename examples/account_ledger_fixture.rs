@@ -168,7 +168,8 @@ fn run() -> Result<Value, Box<dyn std::error::Error>> {
     if let Input::VerifyAcceptance { acceptance } = command {
         let community: [u8; 32] = Sha256::digest(config.community_id.as_bytes()).into();
         if acceptance.statement.community != community
-            || acceptance.statement.policy.state_digest(&community)? != config.policy.account.state_digest(&community)?
+            || acceptance.statement.policy.state_digest(&community)?
+                != config.policy.account.state_digest(&community)?
             || acceptance.proof_scope != config.proof_scope
         {
             return Err("acceptance policy or verifier scope mismatch".into());
@@ -233,10 +234,14 @@ fn run() -> Result<Value, Box<dyn std::error::Error>> {
         ledger.admit_checkpoint(checkpoint.slot, checkpoint.root)?;
     }
     let result = match command {
-        Input::TuneWaitingPeriod { expected_revision, seconds, now } => {
+        Input::TuneWaitingPeriod {
+            expected_revision,
+            seconds,
+            now,
+        } => {
             let tuning = ledger.update_waiting_period(expected_revision, seconds, || now)?;
             Ok(json!({ "tuning": tuning, "policy": ledger.account_policy() }))
-        },
+        }
         Input::Apply {
             grant,
             authorization,

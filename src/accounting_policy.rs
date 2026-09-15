@@ -30,7 +30,9 @@ impl AccountPolicy {
     /// remain before policy expiry, or the promised refund would be unusable.
     pub fn reservation_deadline(&self, now: u64) -> Result<u64, Error> {
         let horizon = self.proof_valid_until(now)?;
-        let deadline = now.checked_add(self.abandon_after).ok_or(Error::InvalidInput)?;
+        let deadline = now
+            .checked_add(self.abandon_after)
+            .ok_or(Error::InvalidInput)?;
         if deadline < horizon || deadline >= self.policy_valid_until {
             return Err(Error::Expired);
         }

@@ -26,8 +26,11 @@ closed; the older blind-permit allocation ledger is a separate mechanism.
 One common checkpoint root can be admitted per configured time slot. Publishing
 a root is a trusted local operation and requires independently verifying its
 root/device/accounting delegations. Member-supplied roots are not authoritative.
-The current database configuration is pinned on first open; changing policy or
-proof scopes without an implemented continuity transition fails closed.
+The immutable database configuration is pinned on first open. Its trusted
+[tuning API](tuning.md) changes only the prospective waiting period with durable
+revision/CAS checks. Full named policy digests change; stable state-policy
+bindings and committed slot deadlines do not. Other economic rules and proof
+scopes remain pinned; a configuration edit cannot bypass state continuity.
 
 ## Updates and recovery
 
@@ -46,14 +49,14 @@ reservation-device authority bound protected first-payload release separately.
 A short SQLite transaction checks whether the request is already accepted or
 eligible for verification. Proof verification runs with all database locks
 released. A final immediate transaction rechecks current authorization, time,
-checkpoint, cached response, lifetime genesis or exact previous state, and
+current configuration, checkpoint, cached response, lifetime genesis or exact previous state, and
 settlement markers before committing the successor and signed acceptance.
 Another owner can commit while a slow proof is being checked. WAL with
 `synchronous=FULL` protects commits under SQLite's filesystem durability assumptions.
 
 Exact signed retries recover the cached acceptance without another proof or
 debit, including after the original request expires when the caller supplies
-current root/device authority. A newly authorized device can request the latest
+current root/device authority, including after a waiting-period update. A newly authorized device can request the latest
 acceptance or an earlier request's result. The signed status response binds a
 fresh challenge and observation time; an old acceptance alone does not prove
 that it is current. A status lookup returns no private opening and permits no
@@ -65,6 +68,14 @@ before releasing an introduction. Lost private recovery material, rollback of
 all replicas and a malicious operator's inconsistent histories remain limits.
 
 ## Executed evidence
+
+Crow9/59 at `5e33c10bceb2361c7e16a722a0259bb7f11ef050` passed 19
+storage/authorization tests, including six new live-tuning tests. They exercise
+concurrent tuning, rejected stale handles/proofs, tuning during verification,
+rollback after partial writes, restart recovery, immutable fields and exact
+old-policy retries. These use the explicit synthetic proof verifier. The fixed
+deadline/refund circuit and peer-v3 browser evidence require their separate run.
+
 
 At `524956395852696c1d3f6ac4bd57ef5f8652c261`, Crow run 9/48 passed thirteen
 storage/authorization tests, the existing 21 native and 55 historical JavaScript

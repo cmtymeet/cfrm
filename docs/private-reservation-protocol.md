@@ -13,9 +13,9 @@ account-state evidence. The older `resolve_private` entry point remains
 
 The proposal keeps one named account per permanent community member while hiding
 its contacts. Both outgoing and incoming obligations affect that same account.
-An Active outgoing obligation remains outstanding when the recipient stays
-silent. That may be the intended cost of sending without receiving a response;
-this proposal does not require or authorize an automatic refund.
+An Active outgoing obligation stays reserved until confirmed Answer or its
+original deadline. At that deadline the sender can prove a single refund
+without the recipient returning. The consumed admission turn remains spent.
 
 ## Scope and policy boundary
 
@@ -187,26 +187,27 @@ contact nonce on retry.
 | Operator response lost | Query or retry the exact persisted request. Do not guess failure, generate another debit, or overwrite its successor opening. |
 | Competing device wins | Recover the accepted version and opening through authorized device/recovery synchronization, then construct a new transition from that state. Never rebase by dropping obligations. |
 | One or both slots remain Prepared | No introduction is released. Cancel only by proving the current slot is still Prepared; retain the event tombstone and consumed admission turn. |
-| Sender becomes Active; recipient stays silent or never activates | No payload is released without both Active proofs. After the lease, retire the outgoing reservation with its cost spent; neither expiry nor reconnect refunds it. |
+| Sender becomes Active; recipient stays silent or never activates | No payload is released without both Active proofs. At the original deadline, the sender can prove expiry and recover its reservation without a peer receipt; the admission turn stays spent. Reconnect cannot accelerate the deadline. |
 | Recipient becomes Active; its acknowledgment is lost | Retry the private evidence exchange for the same event. Do not activate another slot or regenerate the introduction nonce. |
 | Recipient closes before seeing an introduction | Persist its exact closure and retain it for private delivery/retry. Once validly bound to the Active obligation, it can support settlement without claiming that an introduction was delivered. Old data remains rejected. |
 | Receipt or settlement response is lost | Retry the same private event/owner update. A renewed receipt changes its current signature evidence, not the event marker or credit count. |
 | Credentials expire while pending | Preserve historical reservation provenance. Verify authority appropriate to the eventual transition; a silent peer's expired membership must not prevent the recipient's own authorized closure. |
 | All private openings/recovery material are lost | Preserve the lifetime account registration and operator state. There is no second genesis or balance reset. Continued usability is not guaranteed. |
 
-Transport cancellation does not refund an Active outgoing obligation. In particular,
-absence of peer evidence proves neither non-delivery nor permission to refund.
-An Active obligation stranded by silence is a fairness and griefing tradeoff,
-and implements the intended drain on unanswered sending. Explicit outgoing
-expiry and bounded refill provide a numerical recovery path under an available
-operator; they do not prove perfect fair exchange or bound operator downtime.
+Transport cancellation does not grant an early refund. The fixed deadline,
+not a claim that the recipient disappeared, authorizes expiry. The client must
+prove that transition under valid own authority and policy; operator downtime
+can delay acceptance. This provides recovery without meeting the peer again,
+not perfect simultaneous fair exchange. Runtime tuning affects future
+reservations only; see [operational tunables](tuning.md).
 
 ## Settlement authority and remaining implementation work
 
-An outgoing refund requires an authenticated recipient Answer bound to the
-reserved pair, nonce, group and role. Authenticated recipient Close or proved
-outgoing lease expiry consumes the cost without a refund. A recipient's own
-closure may resolve its incoming obligation. A self-declared incoming answer
+An early outgoing refund requires an authenticated recipient Answer bound to
+the reserved pair, nonce, group and role. At the original deadline, proved
+expiry returns the reservation without a peer receipt. Outgoing Close settlement
+is rejected, so hiding Close cannot improve the sender's refund timing. A
+recipient's own closure immediately resolves only its incoming obligation. A self-declared incoming answer
 cannot earn a reward without the additional authenticated acknowledgment event
 selected by the response protocol. No reward formula is chosen here.
 

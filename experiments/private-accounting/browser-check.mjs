@@ -209,7 +209,7 @@ function publicCommand(value) {
   const exact = (v, keys) => v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).sort().join(',') === [...keys].sort().join(',');
   if (accountingMode === 'account-state-v2') {
     const key = k => exact(k, ['accountKey','secretHash']) && /^[0-9a-f]{128}$/.test(k.accountKey) && /^[0-9a-f]{64}$/.test(k.secretHash);
-    if (value?.command === 'enroll') return exact(value, ['command','keys','peerExpires']) && value.keys?.length === 2 && value.keys.every(key) && value.peerExpires === 200;
+    if (value?.command === 'enroll') return exact(value, ['command','keys','peerExpires']) && value.keys?.length === 2 && value.keys.every(key) && value.peerExpires === (accountScenario === 'answer' ? 200 : 10000);
     if (value?.command === 'verify') return exact(value, ['command','delegations']) && value.delegations?.length === 2;
     if (value?.command === 'answer') return exact(value, ['command']) && accountScenario === 'answer';
     if (value?.command === 'close') return exact(value, ['command','now']) && accountScenario === 'close' && value.now === 100;

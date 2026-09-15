@@ -1,11 +1,11 @@
 // Dedicated loopback-test bridge; no deployment endpoint. It holds only public
 // account requests and independently native-verified enrollment objects.
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { createAccountVerifier } from '../account-state/verify.mjs';
-import { ACCOUNT_MODE } from '../account-state/hashes.mjs';
+import { ACCOUNT_MODE, policyDigest, statePolicyDigest } from '../account-state/hashes.mjs';
 import { nativeProcess, stopNativeProcesses } from './native-process.mjs';
 
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
@@ -23,19 +23,22 @@ export async function createLedgerBridge({ directory, manifestPath, binary }) {
     ledger: resolve(directory, 'config.json'), database: resolve(directory, 'accounts.sqlite'),
     verifier: resolve('account-state/verify-request.mjs'), peerVerifier: resolve('peer-reservation/verify-request.mjs') };
   const manifest = JSON.parse(await readFile(paths.manifest, 'utf8'));
-  if (manifest.accountingMode !== ACCOUNT_MODE || manifest.peerReservation?.mode !== 'peer-reservation-v2') throw new Error('Bridge artifact mode');
+  if (manifest.accountingMode !== ACCOUNT_MODE || manifest.peerReservation?.mode !== 'peer-reservation-v3') throw new Error('Bridge artifact mode');
   const scope = { circuitDigest: Array.from(decode(manifest.circuitSha256)), verifyingKeyDigest: Array.from(decode(manifest.vkSha256)) };
   const args = [paths.ledger, paths.database, paths.verifier, paths.manifest, paths.enrollment, ACCOUNT_MODE];
   const active = new Set(), originals = new Map(), accepted = new Map();
   const evidence = { applies: 0, acceptanceChecks: 0, nativeCalls: 0, witnessReceived: false, latest: [], currentStateChecks: [],
     currentStateLimitation: 'trusted own-account read-only snapshot; no lock across delivery or counterpart freshness claim' };
-  let initialized = false, busy = false;
+  let initialized = false, busy = false, trusted, config, retained;
+  const saveJSON = async (path, value) => { await writeFile(path + '.next', JSON.stringify(value)); await rename(path + '.next', path); };
   async function invoke(input) { evidence.nativeCalls++; return nativeProcess(binary, args, input, active); }
   return {
     paths, evidence,
     async enroll(value) {
       if (initialized || value.synthetic !== true || !eq(value.acceptedTimes, [100,300,600])) throw new Error('Bridge native enrollment/config');
-      const trusted = { community: value.community, entries: value.entries, acceptedTimes: value.acceptedTimes };
+      retained = value;
+      value.acceptedPolicies = [structuredClone(manifest.accountPolicy)];
+      trusted = { community: value.community, entries: value.entries, acceptedTimes: value.acceptedTimes, acceptedPolicies: value.acceptedPolicies };
       // This function is called only with the native fixture response retained
       // by the server. No browser request can provide authoritative entries.
       const verifier = await createAccountVerifier(paths.manifest, trusted);
@@ -43,19 +46,35 @@ export async function createLedgerBridge({ directory, manifestPath, binary }) {
       try { root = Array.from(Buffer.from(verifier.checkpoint.root.toString(16).padStart(64, '0'), 'hex')); }
       finally { await verifier.destroy(); }
       const trust = value.trust;
-      const config = { communityId: trust.community_id, admissionPolicyDigest: trust.policy_digest,
+      config = { communityId: trust.community_id, admissionPolicyDigest: trust.policy_digest,
         issuerPublicKey: trust.issuer_public_key, policy: { account: manifest.accountPolicy,
           maxAuthorizationSeconds: 100, maxProofBytes: 1_000_000, checkpointPeriodSeconds: 1000 },
         proofScope: scope, checkpoints: [{ slot: 0, root }] };
       for (const entry of value.entries) originals.set(entry.memberId, structuredClone(entry.originalDelegation));
-      await writeFile(paths.enrollment, JSON.stringify(trusted));
-      await writeFile(paths.ledger, JSON.stringify(config));
+      await saveJSON(paths.enrollment, trusted);
+      await saveJSON(paths.ledger, config);
       initialized = true;
     },
     async call(input) {
       if (!initialized || busy) throw new Error('Ledger bridge not ready or busy');
       busy = true;
       try {
+        if (exact(input, ['action']) && input.action === 'tuneWaitingPeriod') {
+          // A single host-authorized synthetic step, not a deployment endpoint.
+          // The browser supplies neither policy values nor operator authority.
+          if (evidence.tuning || evidence.applies < 7 || config.policy.account.abandonAfter !== 500) throw new Error('Unscheduled fixture policy tuning');
+          const reply = await invoke({ action: 'tuneWaitingPeriod', expectedRevision: 0, seconds: 900, now: 100 });
+          if (!reply.ok) return reply;
+          const { policy, tuning } = reply.value, community = decode(trusted.community);
+          if (!eq(policy, { ...manifest.accountPolicy, abandonAfter: 900 }) || tuning.revision !== 1 || tuning.seconds !== 900
+              || !eq(Array.from(await statePolicyDigest(community, policy)), tuning.statePolicyDigest)
+              || !eq(Array.from(await policyDigest(community, policy)), tuning.policyDigest)) throw new Error('Actual tuned policy differs from trusted step');
+          config.policy.account = policy; trusted.acceptedPolicies.push(structuredClone(policy));
+          retained.waitingPeriodTuning = { beforeProofIndex: evidence.applies, tuning, policy };
+          evidence.tuning = structuredClone(retained.waitingPeriodTuning);
+          await saveJSON(paths.enrollment, trusted); await saveJSON(paths.ledger, config);
+          return reply;
+        }
         if (exact(input, ['action','acceptance']) && input.action === 'verifyAcceptance') {
           if (++evidence.acceptanceChecks > 160) throw new Error('Acceptance verification call bound');
           return await invoke(input);

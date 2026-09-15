@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { Barretenberg, BackendType } from '@aztec/bb.js';
 import { sha, hex, unhex } from '../common.mjs';
-import { accountHashes, checkpointFromVerified, policyDigest, ACCOUNT_MODE } from '../account-state/hashes.mjs';
+import { accountHashes, checkpointFromVerified, statePolicyDigest, ACCOUNT_MODE } from '../account-state/hashes.mjs';
 import { fieldBytes } from '../hashes.mjs';
 import { PEER_MODE, EXPECTED_KEYS, exact, bytes32, equalBytes, safeInteger } from './witness.mjs';
 import { createPeerVerifier } from './verify.mjs';
@@ -33,7 +33,7 @@ try {
   const accountProofScope = { circuitDigest: Array.from(unhex(manifest.circuitSha256)), verifyingKeyDigest: Array.from(unhex(manifest.vkSha256)) };
   if (!equalBytes(config.proofScope.circuitDigest, accountProofScope.circuitDigest)
       || !equalBytes(config.proofScope.verifyingKeyDigest, accountProofScope.verifyingKeyDigest)
-      || JSON.stringify(config.policy.account) !== JSON.stringify(manifest.accountPolicy)) throw new Error('Trusted peer/ledger scope mismatch');
+      || !equalBytes(await statePolicyDigest(unhex(native.community), config.policy.account), await statePolicyDigest(unhex(native.community), manifest.accountPolicy))) throw new Error('Trusted peer/ledger scope mismatch');
   api = await Barretenberg.new({ backend: BackendType.Wasm, threads: 1, skipSrsInit: true,
     memory: { initial: 2048, maximum: 32768 } });
   const community = unhex(native.community), checkpoint = await checkpointFromVerified(community, native.entries, accountHashes(api));
@@ -56,7 +56,7 @@ try {
   // history, initial device and challenge. Only state/version may be taken from
   // the certificate, whose signature and scope are checked independently.
   const e = request.expectedContext;
-  if (!exact(e, ['now','devicePublicKey','expected']) || !exact(e.expected, EXPECTED_KEYS.filter(key => !['stateVersion','stateCommitment','accountPolicyDigest','ownerAuthority'].includes(key)))) throw new Error('Native expected peer context fields');
+  if (!exact(e, ['now','devicePublicKey','expected']) || !exact(e.expected, EXPECTED_KEYS.filter(key => !['stateVersion','stateCommitment','statePolicyDigest','ownerAuthority'].includes(key)))) throw new Error('Native expected peer context fields');
   const expected = structuredClone(e.expected), acceptance = request.presentation.accountAcceptance;
   const owner = bytes32(expected.owner), device = bytes32(e.devicePublicKey);
   const enrolledIndex = native.entries.findIndex(entry => equalBytes(Buffer.from(entry.memberId, 'base64url'), owner)
@@ -64,18 +64,18 @@ try {
   if (!equalBytes(bytes32(expected.community), community) || expected.phase !== 2 || enrolledIndex < 0) throw new Error('Native peer owner/device/community/phase');
   Object.assign(expected, { stateVersion: acceptance.statement.nextVersion, stateCommitment: acceptance.statement.nextState,
     ownerAuthority: Array.from(fieldBytes(checkpoint.entries[enrolledIndex].leaf)),
-    accountPolicyDigest: Array.from(await policyDigest(community, manifest.accountPolicy)) });
+    statePolicyDigest: Array.from(await statePolicyDigest(community, config.policy.account)) });
   // Trusted release metadata, not a new circuit input. The delegation's expiry
   // is independently bounded by its original admission/root-device authority.
   // The accepted request's validUntil only bounded its commit; it does not
   // expire the accepted Active state at every account rate-window boundary.
-  const limits = [safeInteger(manifest.accountPolicy.policyValidUntil),
-    safeInteger(expected.openedAt) + safeInteger(manifest.accountPolicy.abandonAfter),
+  const limits = [safeInteger(config.policy.account.policyValidUntil),
+    safeInteger(expected.expiresAt),
     safeInteger(native.entries[enrolledIndex].expiresAt)];
   const validUntil = limits.reduce((minimum, value) => value < minimum ? value : minimum);
   if (safeInteger(e.now) >= validUntil) throw new Error('Peer release authority has expired');
   const result = await verifier.verify(request.presentation, { now: e.now, expected,
-    accountPolicy: manifest.accountPolicy, enrollmentRoot: Array.from(fieldBytes(checkpoint.root)) });
+    accountPolicy: config.policy.account, enrollmentRoot: Array.from(fieldBytes(checkpoint.root)) });
   if (request.requireCurrentOwn) {
     // Set only by native cmsg's own-current path, never a presentation field.
     // This is a read-only snapshot, not a lock extending through payload release.

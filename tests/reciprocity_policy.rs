@@ -93,13 +93,20 @@ impl Model {
     }
 
     fn create(&mut self, root: u8, device: u8, now: u64) -> Result<(), Reject> {
+        self.create_at(root, device, now, now)
+    }
+
+    fn create_at(&mut self, root: u8, device: u8, proved_at: u64, committed_at: u64) -> Result<(), Reject> {
         if self.accounts.contains_key(&root) { return Err(Reject::Root); }
         if self.devices.contains_key(&device) { return Err(Reject::Device); }
-        self.policy.capacity_at(now, now).map_err(|_| Reject::Policy)?;
+        if committed_at < proved_at { return Err(Reject::Clock); }
+        let anchor = self.policy.proof_valid_until(proved_at).map_err(|_| Reject::Policy)?;
+        if committed_at >= anchor { return Err(Reject::Expired); }
+        self.policy.capacity_at(anchor, proved_at).map_err(|_| Reject::Policy)?;
         self.accounts.insert(root, Account {
-            created_at: now, frontier: now, epoch: now / self.policy.rate_window,
+            created_at: anchor, frontier: anchor, epoch: proved_at / self.policy.rate_window,
             admissions: 0, available: self.policy.initial_credit, locked: 0,
-            burned: 0, refilled: 0, version: 0, clock: now, slots: BTreeMap::new(),
+            burned: 0, refilled: 0, version: 0, clock: committed_at, slots: BTreeMap::new(),
         });
         self.devices.insert(device, root);
         Ok(())
@@ -154,14 +161,16 @@ impl Model {
                     opened_at, turn_epoch: epoch, amount });
             }
             Action::Refill => {
-                if proved_at.checked_sub(account.frontier).ok_or(Reject::Clock)? < self.policy.refill_period {
+                if proved_at < account.frontier || proved_at - account.frontier < self.policy.refill_period {
                     return Err(Reject::RefillWait);
                 }
                 let headroom = u128::from(capacity) - u128::from(account.available) - account.locked;
                 let grant = u128::from(self.policy.refill_units).min(headroom) as u32;
                 account.available += grant;
                 account.refilled += u128::from(grant);
-                account.frontier = proved_at; // Even a clipped zero consumes this opportunity.
+                // Upper-bound actual acceptance time; backdated proofs cannot
+                // compress several grants into one still-valid common window.
+                account.frontier = until; // Includes clipped zero grants.
             }
             Action::Activate(id) | Action::CancelPrepared(id) | Action::Answer(id, _)
             | Action::Close(id) | Action::Burn(id) | Action::QueueAnswer(id) => {
@@ -244,6 +253,8 @@ impl Model {
                 .filter(|slot| slot.turn_epoch == account.epoch).count());
             assert!(account.admissions <= self.policy.admission_limit_at(account.created_at, now).unwrap());
             assert!(account.epoch <= now / self.policy.rate_window);
+            assert!(account.created_at <= account.frontier);
+            assert!(account.frontier <= self.policy.proof_valid_until(now).unwrap());
         }
     }
 }
@@ -274,10 +285,13 @@ fn actual_policy_rejects_unusable_newcomer_and_refill_parameters() {
         AccountPolicy { refill_units: 0, ..good.clone() },
         AccountPolicy { refill_units: 4, ..good.clone() },
         AccountPolicy { abandon_after: 0, ..good.clone() },
+        AccountPolicy { abandon_after: 9, ..good.clone() },
     ];
     for value in invalid { assert!(value.validate().is_err(), "{value:?}"); }
-    assert!(good.capacity_at(100, 99).is_err());
-    assert!(good.admission_limit_at(100, 99).is_err());
+    assert_eq!(good.capacity_at(110, 100).unwrap(), 3);
+    assert_eq!(good.admission_limit_at(110, 109).unwrap(), 3);
+    assert!(good.capacity_at(111, 100).is_err());
+    assert!(good.admission_limit_at(111, 100).is_err());
     assert_eq!(good.proof_valid_until(109).unwrap(), 110);
     let clipped = AccountPolicy { policy_valid_until: 115, ..good };
     assert_eq!(clipped.proof_valid_until(110).unwrap(), 115);
@@ -290,9 +304,9 @@ fn both_directions_share_capacity_and_full_incoming_cannot_refill_around_it() {
     active(&mut model, 70, 2, Role::Incoming, 100);
     assert_eq!((model.accounts[&7].available, model.accounts[&7].locked), (0, 3));
     assert_eq!(model.run(70, Action::Reserve(3, Role::Outgoing, 100), 100), Err(Reject::Capacity));
-    model.run(70, Action::Refill, 105).unwrap();
+    model.run(70, Action::Refill, 115).unwrap();
     assert_eq!(model.accounts[&7].available, 0);
-    model.invariants(105);
+    model.invariants(115);
 
     let p = AccountPolicy { incoming_reservation: 1, maximum_available: 3, ..policy() };
     let mut inbox = single(p);
@@ -351,19 +365,80 @@ fn burning_then_months_offline_yields_one_refill_and_graduation_mints_nothing() 
     model.run(70, Action::Refill, later).unwrap();
     assert_eq!(model.accounts[&7].available, 1);
     assert_eq!(model.run(70, Action::Refill, later + 4), Err(Reject::RefillWait));
-    model.run(70, Action::Refill, later + 5).unwrap();
+    assert_eq!(model.run(70, Action::Refill, later + 14), Err(Reject::RefillWait));
+    model.run(70, Action::Refill, later + 15).unwrap();
     assert_eq!(model.accounts[&7].available, 2);
-    model.invariants(later + 5);
+    model.invariants(later + 15);
 
     let mut newcomer = single(policy());
-    assert_eq!(newcomer.policy.capacity_at(100, 199).unwrap(), 3);
-    assert_eq!(newcomer.policy.capacity_at(100, 200).unwrap(), 6);
-    assert_eq!(newcomer.policy.admission_limit_at(100, 199).unwrap(), 3);
-    assert_eq!(newcomer.policy.admission_limit_at(100, 200).unwrap(), 6);
+    assert_eq!(newcomer.policy.capacity_at(110, 209).unwrap(), 3);
+    assert_eq!(newcomer.policy.capacity_at(110, 210).unwrap(), 6);
+    assert_eq!(newcomer.policy.admission_limit_at(110, 209).unwrap(), 3);
+    assert_eq!(newcomer.policy.admission_limit_at(110, 210).unwrap(), 6);
     assert_eq!(newcomer.accounts[&7].available, 3);
-    newcomer.run(70, Action::Refill, 200).unwrap();
+    newcomer.run(70, Action::Refill, 210).unwrap();
     assert_eq!(newcomer.accounts[&7].available, 4);
-    newcomer.invariants(200);
+    newcomer.invariants(210);
+}
+
+#[test]
+fn delayed_genesis_cannot_start_age_or_cooldown_before_actual_registration() {
+    let p = AccountPolicy { newcomer_period: 2, refill_period: 2, ..policy() };
+    let mut model = Model::new(p);
+    model.create_at(7, 70, 100, 109).unwrap();
+    let account = &model.accounts[&7];
+    assert_eq!((account.created_at, account.frontier), (110, 110));
+    assert_eq!(model.policy.capacity_at(account.created_at, 109).unwrap(), 3);
+    assert_eq!(model.policy.admission_limit_at(account.created_at, 109).unwrap(), 3);
+    assert_eq!(model.policy.capacity_at(account.created_at, 111).unwrap(), 3);
+    assert_eq!(model.policy.capacity_at(account.created_at, 112).unwrap(), 6);
+    assert_eq!(model.run(70, Action::Refill, 109), Err(Reject::RefillWait));
+    // Future conservative anchors must not freeze ordinary newcomer activity.
+    active(&mut model, 70, 1, Role::Outgoing, 109);
+    model.invariants(109);
+    assert_eq!(model.run(70, Action::Refill, 111), Err(Reject::RefillWait));
+    let mut expired = Model::new(policy());
+    assert_eq!(expired.create_at(7, 70, 100, 110), Err(Reject::Expired));
+    assert!(expired.accounts.is_empty());
+}
+
+#[test]
+fn backdated_refill_proofs_cannot_catch_up_inside_one_acceptance_window() {
+    let mut model = single(AccountPolicy { refill_period: 2, ..policy() });
+    for id in 1..=3 { active(&mut model, 70, id, Role::Outgoing, 100); }
+    for id in 1..=3 { model.run(70, Action::Burn(id), 120).unwrap(); }
+    let version = model.accounts[&7].version;
+    model.commit(70, version, Action::Refill, 203, 209).unwrap();
+    assert_eq!((model.accounts[&7].available, model.accounts[&7].frontier), (1, 210));
+    // Each signed time is in the still-valid 200..210 window. Storing the
+    // first proof's 203 as frontier would permit extra grants at 205/207/209.
+    for proved_at in [205, 207, 209] {
+        let before = model.clone();
+        let version = model.accounts[&7].version;
+        assert_eq!(model.commit(70, version, Action::Refill, proved_at, 209), Err(Reject::RefillWait));
+        assert_eq!(model, before);
+    }
+    assert_eq!(model.run(70, Action::Refill, 211), Err(Reject::RefillWait));
+    model.run(70, Action::Refill, 212).unwrap();
+    assert_eq!(model.accounts[&7].available, 2);
+    assert_eq!(model.accounts[&7].frontier, 220);
+    model.invariants(212);
+}
+
+#[test]
+fn zero_grant_consumes_horizon_but_does_not_block_other_transitions() {
+    let mut model = single(policy());
+    model.run(70, Action::Refill, 115).unwrap();
+    assert_eq!(model.accounts[&7].refilled, 0);
+    assert_eq!(model.accounts[&7].frontier, 120);
+    model.run(70, Action::Reserve(1, Role::Outgoing, 115), 115).unwrap();
+    model.run(70, Action::CancelPrepared(1), 115).unwrap();
+    assert_eq!(model.run(70, Action::Refill, 119), Err(Reject::RefillWait));
+    assert_eq!(model.run(70, Action::Refill, 124), Err(Reject::RefillWait));
+    model.run(70, Action::Refill, 125).unwrap();
+    assert_eq!(model.accounts[&7].frontier, 130);
+    assert_eq!(model.accounts[&7].refilled, 0);
+    model.invariants(125);
 }
 
 #[test]
@@ -432,7 +507,7 @@ fn new_devices_restore_the_same_root_frontier_and_cannot_create_new_genesis() {
     assert_eq!(model.commit(71, stale_version, Action::Refill, 105, 105), Err(Reject::Conflict));
     assert_eq!(model, before);
     let restored = model.clone(); // Model of authenticated snapshot restoration.
-    assert_eq!(restored.accounts[&7].created_at, 100);
+    assert_eq!(restored.accounts[&7].created_at, 110);
     assert_eq!(restored.accounts[&7].admissions, 2);
     model.run(71, Action::Recover, 105).unwrap();
     model.run(71, Action::Disconnect, 105).unwrap();

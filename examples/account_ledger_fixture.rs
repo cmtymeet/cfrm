@@ -46,6 +46,9 @@ enum Input {
         statement: AccountStatement,
         proof: Vec<u8>,
     },
+    VerifyAcceptance {
+        acceptance: AccountAcceptance,
+    },
     Apply {
         grant: AdmissionGrant,
         authorization: DeviceAuthorization,
@@ -145,6 +148,20 @@ fn run() -> Result<Value, Box<dyn std::error::Error>> {
             "proofDigest": HEXLOWER.encode(&Sha256::digest(&request.proof)),
             "signingBytes": HEXLOWER.encode(&account_request_bytes(&request)?) }));
     }
+    if let Input::VerifyAcceptance { acceptance } = command {
+        if acceptance.statement.policy != config.policy.account
+            || acceptance.proof_scope != config.proof_scope
+        {
+            return Err("acceptance policy or verifier scope mismatch".into());
+        }
+        verify_account_acceptance(
+            &acceptance,
+            &SigningKey::from_bytes(&[0x4c; 32])
+                .verifying_key()
+                .to_bytes(),
+        )?;
+        return Ok(json!({ "verified": true }));
+    }
     let verifier = RealProcessVerifier {
         scope: config.proof_scope,
         script: std::fs::canonicalize(&args[3])?,
@@ -183,7 +200,7 @@ fn run() -> Result<Value, Box<dyn std::error::Error>> {
             request,
             now,
         } => serde_json::to_value(ledger.status(&grant, &authorization, &request, || now)?),
-        Input::Prepare { .. } | Input::Verify { .. } => unreachable!(),
+        Input::Prepare { .. } | Input::Verify { .. } | Input::VerifyAcceptance { .. } => unreachable!(),
     }?;
     if args.len() == 8 {
         std::process::exit(0);

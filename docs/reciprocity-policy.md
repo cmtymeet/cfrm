@@ -45,7 +45,9 @@ Let `A` be available units, `R` all reserved units across both directions, and
 
 New accounts start with `initialCredit` available units and that same total
 capacity. After `newcomerPeriod` from their permanent genesis time, capacity
-becomes `maximumAvailable`. That field bounds available **plus reserved** units
+becomes `maximumAvailable`. The permanent genesis age anchor is the end of the
+genesis proof's validity window, so backdating that proof cannot shorten the
+newcomer period. That field bounds available **plus reserved** units
 in protocol v2. Graduation raises the ceiling and does not issue units. Device
 enrollment, renewal, profile edits and reconnects cannot restart account age.
 
@@ -57,13 +59,16 @@ window permits a boundary burst across two adjacent windows; it is not a claim
 of a rolling-window limit. Unauthenticated handshake traffic additionally needs
 transport resource limits.
 
-After at least `refillPeriod` since the previous refill, a refill issues:
+After at least `refillPeriod` beyond the previous refill's proof horizon, a
+refill issues:
 
 ```
 grant = min(refillUnits, C - A - R)
 ```
 
-The refill frontier advances to the current proof time, even for a zero grant.
+The refill frontier advances to `validUntil`, even for a zero grant; genesis
+initializes it to that same horizon. This prevents multiple backdated proofs
+from collecting missed grants during a single current window.
 Only one grant is available after an absence; missed periods do not accumulate.
 Full unresolved capacity leaves no refill headroom. Close and recovery do not
 need new admission turns. All amounts and durations are mandatory configuration;
@@ -78,7 +83,8 @@ outlive it. The ledger rechecks expiry after proof verification and atomically
 accepts one successor with its exact response and event marker.
 
 Reservation, activation and Answer require the entire proof validity window to
-fit inside the private lease. A final partial window may therefore be unusable;
+fit inside the private lease. Configuration rejects `abandonAfter < rateWindow`.
+A final partial window may nevertheless be unusable;
 clients must leave enough time for proving and acceptance. Outgoing expiry is
 available at or after the lease deadline. Unclaimed late Answer evidence cannot
 become a stored refund coupon after expiry. An already accepted Answer cannot

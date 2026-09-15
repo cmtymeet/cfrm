@@ -58,6 +58,7 @@ impl AccountPolicy {
             || self.newcomer_admissions > self.maximum_admissions
             || self.refill_units == 0
             || self.refill_units > self.initial_credit
+            || self.abandon_after < self.rate_window
             || [
                 self.newcomer_period,
                 self.rate_window,
@@ -78,11 +79,11 @@ impl AccountPolicy {
     }
 
     /// Capacity grows with permanent account age; this never issues credit.
-    /// `created_at` must come from the authenticated genesis state, never the
-    /// current device's enrollment or a caller-controlled profile timestamp.
+    /// `created_at` is the end of the authenticated genesis proof window, never
+    /// the current device's enrollment or a caller-controlled profile timestamp.
     pub fn capacity_at(&self, created_at: u64, now: u64) -> Result<u32, Error> {
         self.validate_age(created_at, now)?;
-        Ok(if now - created_at < self.newcomer_period {
+        Ok(if now < created_at || now - created_at < self.newcomer_period {
             self.initial_credit
         } else {
             self.maximum_available
@@ -92,7 +93,7 @@ impl AccountPolicy {
     /// Both incoming and outgoing reservations consume the same window count.
     pub fn admission_limit_at(&self, created_at: u64, now: u64) -> Result<u32, Error> {
         self.validate_age(created_at, now)?;
-        Ok(if now - created_at < self.newcomer_period {
+        Ok(if now < created_at || now - created_at < self.newcomer_period {
             self.newcomer_admissions
         } else {
             self.maximum_admissions
@@ -115,10 +116,13 @@ impl AccountPolicy {
 
     fn validate_age(&self, created_at: u64, now: u64) -> Result<(), Error> {
         self.validate()?;
-        if created_at < self.policy_valid_from || now > MAX_INTEGER {
+        if created_at < self.policy_valid_from
+            || created_at > self.policy_valid_until
+            || now > MAX_INTEGER
+        {
             return Err(Error::InvalidInput);
         }
-        if now < created_at {
+        if created_at > self.proof_valid_until(now)? {
             return Err(Error::ClockRollback);
         }
         if now >= self.policy_valid_until {
@@ -303,6 +307,7 @@ pub struct AccountAcceptance {
 pub fn account_acceptance_bytes(value: &AccountAcceptance) -> Result<Vec<u8>, Error> {
     if value.request_id == [0; 32]
         || value.accepted_at < value.statement.now
+        || value.accepted_at >= value.statement.valid_until
         || value.accepted_at > MAX_INTEGER
     {
         return Err(Error::InvalidInput);

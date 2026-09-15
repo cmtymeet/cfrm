@@ -28,7 +28,7 @@ export async function runRustAccountLedgerContract(result, enrolled) {
   // Returned by the independently retained native fixture, never taken from a
   // browser-supplied roster/root or from a proof's claimed configuration.
   assert.equal(enrolled.synthetic, true);
-  assert.deepEqual(enrolled.acceptedTimes, [100,300]);
+  assert.deepEqual(enrolled.acceptedTimes, [100,300,600]);
   const trustedPath = resolve(dir, 'trusted-enrollment.json');
   await writeFile(trustedPath, JSON.stringify({community: enrolled.community,
     entries: enrolled.entries, acceptedTimes: enrolled.acceptedTimes}));
@@ -49,7 +49,7 @@ export async function runRustAccountLedgerContract(result, enrolled) {
     proofScope: scope, checkpoints: [{slot: 0, root}] };
   await writeFile(configPath, JSON.stringify(config));
   const args = [configPath, database, resolve('account-state/verify-request.mjs'), manifestPath,
-    trustedPath, 'account-state-v1'];
+    trustedPath, 'account-state-v2'];
   const checks = []; let childProcesses = 0;
   const checked = (condition, message) => { assert.ok(condition, message); checks.push(message); };
   async function invoke(input, drop = false) {

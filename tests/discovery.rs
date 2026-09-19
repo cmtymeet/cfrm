@@ -410,6 +410,46 @@ fn query_registry_cursor_and_page_limits_are_validated_without_ledger() {
 }
 
 #[test]
+fn query_byte_budget_returns_every_match_once_across_pages() {
+    use cfrm::discovery_store::MemoryDiscoveryStore;
+    let f = Fixture::new();
+    let mut l = limits(); l.max_record_bytes = 3000; l.max_response_bytes = 3000;
+    let service = DiscoveryService::new(f.trust.clone(), l, MemoryDiscoveryStore::new()).unwrap();
+    let mut expected = Vec::new();
+    for member in 5..25 {
+        let mut r = request(&f);
+        r.admission = f.grant(member, &f.device); r.authorization = f.authorize(member, &f.device);
+        if let DiscoveryOperation::Publish { publication, .. } = &mut r.operation {
+            publication.admission = r.admission.clone(); publication.authorization = r.authorization.clone();
+            publication.envelope.member_id = r.admission.member_id.clone();
+            publication.envelope.signature = BASE64URL_NOPAD.encode(&f.device.sign(&envelope_bytes(&publication.envelope)).to_bytes());
+        }
+        sign_request(&f, &mut r); service.execute(&r, 110).unwrap();
+        expected.push(common::member_id(member));
+    }
+    expected.sort();
+    let mut after = None; let mut received = Vec::new(); let mut pages = 0;
+    loop {
+        pages += 1; assert!(pages <= 20, "cursor must advance");
+        let q = operation(&f, &f.device, 5, 11, 80 + pages, 110,
+            DiscoveryOperation::Query { filters: BTreeMap::new(), limit: 20, after: after.clone() });
+        let response = service.execute(&q, 110).unwrap();
+        assert!(serde_json::to_vec(&response).unwrap().len() <= 3000);
+        match response {
+            DiscoveryResponse::Page { entries, next_cursor } => {
+                assert!(!entries.is_empty());
+                received.extend(entries.into_iter().map(|entry| entry.member_id));
+                if next_cursor.is_none() { break; }
+                assert_ne!(next_cursor, after); after = next_cursor;
+            },
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert!(pages > 1, "fixture must exercise byte pagination");
+    assert_eq!(received, expected);
+}
+
+#[test]
 fn invalid_configuration_has_no_hidden_defaults() {
     let f = Fixture::new();
     for bad in 0..5 {

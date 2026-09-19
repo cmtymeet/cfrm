@@ -176,3 +176,35 @@ fn actual_query_continues_after_empty_bounded_scan_and_rejects_rediscovered_read
     server.evict_owned_keys("pagination", &member_id(5));
     assert_eq!(service.execute(&query, 110), Err(Error::Replay));
 }
+
+#[test]
+fn actual_cache_query_byte_budget_preserves_all_matching_members() {
+    let Some(server) = OwnedServer::start() else { return; };
+    let database = server.directory.path().join("control.sqlite");
+    let f = Fixture::new(); let mut limits = fixtures::limits();
+    limits.max_record_bytes = 3000; limits.max_response_bytes = 3000;
+    let service = DiscoveryService::new(f.trust.clone(), limits, server.store("page-bytes", &database)).unwrap();
+    let mut expected = Vec::new();
+    for member in 5..25 {
+        service.execute(&fixtures::publication(&f, member, 1, 1, 31), 110).unwrap();
+        expected.push(member_id(member));
+    }
+    expected.sort(); let mut received = Vec::new(); let mut after = None; let mut pages = 0;
+    loop {
+        pages += 1; assert!(pages <= 20, "cursor must advance");
+        let query = fixtures::operation(&f, &f.device, 5, 11, 80 + pages, 110,
+            DiscoveryOperation::Query { filters: BTreeMap::new(), limit: 20, after: after.clone() });
+        let response = service.execute(&query, 110).unwrap();
+        assert!(serde_json::to_vec(&response).unwrap().len() <= 3000);
+        match response {
+            DiscoveryResponse::Page { entries, next_cursor } => {
+                assert!(!entries.is_empty());
+                received.extend(entries.into_iter().map(|entry| entry.member_id));
+                if next_cursor.is_none() { break; }
+                assert_ne!(next_cursor, after); after = next_cursor;
+            },
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert!(pages > 1); assert_eq!(received, expected);
+}

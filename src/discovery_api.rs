@@ -48,7 +48,7 @@ fn normalize_host(value: &str) -> Option<String> {
     if host.is_empty() || host.len() > 253 || host.split('.').any(|label| {
         label.is_empty() || label.len() > 63 || label.starts_with('-') || label.ends_with('-')
             || !label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-    }) || authority.port().is_some_and(|port| port.as_u16().is_none_or(|n| n == 0)) {
+    }) || authority.port().is_some_and(|port| port.as_u16() == 0) {
         return None;
     }
     // Parsing must not silently discard user information, whitespace or bytes.

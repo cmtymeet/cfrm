@@ -98,7 +98,7 @@ impl ValkeyDiscoveryStore {
             || config.connect_timeout.is_zero() || config.io_timeout.is_zero()
             || config.pool_timeout.is_zero() { return Err(Error::InvalidInput); }
         let info = redis::Client::open(config.url.as_str()).map_err(|_| Error::Storage)?;
-        match &info.get_connection_info().addr {
+        match info.get_connection_info().addr() {
             redis::ConnectionAddr::TcpTls { insecure: false, .. } => (),
             redis::ConnectionAddr::Tcp(host, _) if config.allow_plaintext_loopback &&
                 matches!(host.as_str(), "127.0.0.1" | "::1") => (),

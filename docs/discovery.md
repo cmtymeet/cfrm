@@ -99,6 +99,10 @@ fetched original certificates and envelope before displaying decrypted content.
 Pagination can return an empty page with a non-null cursor when the bounded scan
 found no matches. Callers must advance that cursor rather than treating the empty
 page as proof that no more results exist.
+The response byte limit also ends a page. Its cursor stops before the first
+matching entry that would exceed that limit, so a following page cannot skip the
+unreturned result. A configuration too small for one summary returns an explicit
+capacity error rather than a nonadvancing continuation.
 
 Reads and key acquisition are not introductions and do not debit the reciprocity
 ledger. The HTTP path has no dependency on an accounting provider. Eligibility

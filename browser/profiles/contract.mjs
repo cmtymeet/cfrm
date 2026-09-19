@@ -3,7 +3,8 @@
 // these tests do not claim cvld AnonCreds or deployed ticket interoperability.
 import { admissionBytes, authorizationBytes, createDiscoveryClient, createHolderKeyOffer,
   createProfilePublisher, createProfileReader, createSeededProfileHolder, discoveryRequestBytes,
-  profileAssociatedData, profileEnvelopeBytes, verifyCachedProfile, wrappingKeyPair } from './index.js';
+  createProfileTicketAcquirer, createProfileTicketVerifier, profileTicketCommitment,
+  profileAssociatedData, profileEnvelopeBytes, signProfileTicketIssue, keyAccessIssueBytes, wrappingKeyPair } from './index.js';
 import { decode, digest, encode, json, random, verifySignature } from './crypto.js';
 
 const NOW = 1_800_000_000;
@@ -72,6 +73,7 @@ async function fixture() {
       async close() { closes++; },
     }; } },
     acceptPublication: async () => true,
+    proveAccess: async () => ({ syntheticPolicy: 'explicitly unrestricted test policy' }),
     async proveEligibility(request) {
       return { proof: { signature: await signing(eligibilityKey, json(request)) }, requested_proof: {
         revealed_attrs: Object.fromEntries(await Promise.all([['community_id', trust.communityId], ['policy', trust.policyDigest]]
@@ -268,10 +270,87 @@ export const profileContractCases = [
     check(new TextDecoder().decode(discoveryRequestBytes(value)) === JSON.stringify(expected), 'independent request byte vector');
     check(!JSON.stringify(requests).includes(f.checkpoint.active.secret), 'cache adapter sees no secret');
   }],
+  ['blind resource-ticket stamp binds the exact anonymous challenge and dedicated epoch', async () => {
+    const f = await fixture(), redemption = await keyPair();
+    // Public DER is an opaque pinned descriptor for these stamp-only tests.
+    // Real RSA parsing/blinding/verification is exercised by the Rust/Wasm CI.
+    const epoch = { communityId: f.config.trust.communityId, epochId: 'cfrm.key-access.v1/test',
+      validFrom: NOW - 1, issueUntil: NOW + 100, expiresAt: NOW + 200,
+      publicKeyDer: encode(random(400)), redemptionPublicKey: await raw(redemption) };
+    const contextId = await digest(json(['cfrm.permit.epoch.v1', epoch.communityId, epoch.epochId, epoch.validFrom,
+      epoch.issueUntil, epoch.expiresAt, epoch.publicKeyDer, epoch.redemptionPublicKey]));
+    const challengeDigest = encode(random(32)), expiresAt = NOW + 30;
+    const ticket = { contextId, tokenId: encode(random(32)),
+      commitment: await profileTicketCommitment(contextId, challengeDigest, expiresAt),
+      claim: encode(random(32)), expiresAt: epoch.expiresAt, signature: '' };
+    ticket.signature = await signing(redemption, json(['cfrm.permit.redeemed.v1', ticket.contextId, ticket.tokenId,
+      ticket.commitment, ticket.claim, ticket.expiresAt]));
+    const verify = await createProfileTicketVerifier({ epoch, clock: f.config.clock });
+    check(await verify({ ticket, challengeDigest, expiresAt }) === true, 'actual Ed25519 stamp accepted');
+    check(await verify({ ticket, challengeDigest: encode(random(32)), expiresAt }) === false, 'different challenge rejected');
+    check(await verify({ ticket, challengeDigest, expiresAt: expiresAt + 1 }) === false, 'different deadline rejected');
+    check(await verify({ ticket: { ...ticket, claim: encode(random(32)) }, challengeDigest, expiresAt }) === false, 'modified claim rejected');
+    await rejects(() => createProfileTicketVerifier({ epoch: { ...epoch, epochId: 'introduction' }, clock: f.config.clock }), 'wrong purpose namespace');
+    f.advance(expiresAt); check(await verify({ ticket, challengeDigest, expiresAt }) === false, 'challenge deadline enforced');
+  }],
+  ['ticket acquisition persists exact anonymous redemption intent across lost replies', async () => {
+    const f = await fixture(), redemption = await keyPair();
+    const epoch = { communityId: f.config.trust.communityId, epochId: 'cfrm.key-access.v1/test',
+      validFrom: NOW - 1, issueUntil: NOW + 100, expiresAt: NOW + 200,
+      publicKeyDer: encode(random(400)), redemptionPublicKey: await raw(redemption) };
+    const contextId = await digest(json(['cfrm.permit.epoch.v1', epoch.communityId, epoch.epochId, epoch.validFrom,
+      epoch.issueUntil, epoch.expiresAt, epoch.publicKeyDer, epoch.redemptionPublicKey]));
+    const permit = { contextId, serial: encode(random(32)), randomizer: encode(random(32)), signature: encode(random(384)) };
+    let pending, requests = [], lostReply = true, took = 0;
+    const options = { epoch, clock: f.config.clock, takePermit: async () => { took++; return permit; },
+      savePending: async value => { pending = structuredClone(value); }, complete: async () => { pending = null; },
+      async redeem(request) {
+        requests.push(structuredClone(request));
+        const stamp = { contextId, tokenId: await digest(json(['cfrm.permit.spend.v1', contextId, permit.serial])),
+          commitment: await profileTicketCommitment(contextId, request.challengeDigest, request.expiresAt), claim: request.claim,
+          expiresAt: epoch.expiresAt, signature: '' };
+        stamp.signature = await signing(redemption, json(['cfrm.permit.redeemed.v1', contextId, stamp.tokenId, stamp.commitment, stamp.claim, stamp.expiresAt]));
+        if (lostReply) throw new Error('test lost redemption response');
+        return stamp;
+      } };
+    const acquirer = await createProfileTicketAcquirer(options), challengeDigest = encode(random(32)), expiresAt = NOW + 30;
+    await rejects(() => acquirer.acquireTicket({ challengeDigest, expiresAt }), 'lost stamp surfaced');
+    check(pending.request.claim && took === 1, 'exact claim persisted before redeem');
+    await rejects(() => acquirer.acquireTicket({ challengeDigest: encode(random(32)), expiresAt }), 'pending permit cannot transfer to another challenge');
+    lostReply = false;
+    const restored = await createProfileTicketAcquirer({ ...options, pending }); const result = await restored.retryPending();
+    check(JSON.stringify(requests[0]) === JSON.stringify(requests[1]), 'identical anonymous retry');
+    check(pending === null && took === 1 && result.challengeDigest === challengeDigest, 'one reserved ticket committed');
+    check(!JSON.stringify(requests).includes(f.target.memberId), 'redemption contains no reader identity');
+    const blinded = random(416); blinded.set(decode(contextId, 32));
+    const issuance = await signProfileTicketIssue({ ...f.config, identity: f.owner, epoch, blindedRequest: blinded,
+      requestId: encode(random(32)), expiresAt: NOW + 10 });
+    await verifySignature(f.owner.authority.admission.chatPublicKey, issuance.request.signature, await keyAccessIssueBytes(issuance.request));
+    check(!JSON.stringify(issuance).includes(challengeDigest), 'issuance never names a profile-key challenge');
+  }],
 ];
 
 export async function runProfileClientContract() {
   const checks = [];
   for (const [name, run] of profileContractCases) { await run(); checks.push(name); }
   return { checks, count: checks.length, crypto: 'WebCrypto', eligibility: 'synthetic Ed25519 adapter; not AnonCreds', transport: 'in-memory capability; not Tor' };
+}
+
+/** Public-only synthetic fixture for an independent native verifier. No root
+ * or device private key, plaintext profile, DEK or wallet checkpoint crosses
+ * the process boundary. */
+export async function profileDiscoveryInteropFixture() {
+  const f = await fixture(); const publication = await f.publish(), requests = [];
+  const sessionId = encode(random(32));
+  const client = createDiscoveryClient({ ...f.config, identity: f.owner, sessionId, requestSeconds: 10,
+    maxResponseBytes: 16384, lease: async () => ({ leaseId: sessionId, sequence: 1, expiresAt: NOW + 20 }),
+    async send(request) {
+      requests.push(request);
+      return request.operation.kind === 'fetch' ? { kind: 'profile', publication } : { kind: 'updated' };
+    } });
+  await client.publish(publication); await client.fetch(f.target.memberId);
+  return { fixtureOnly: true, now: NOW, trust: f.config.trust, publication, requests,
+    profileSigningBytes: encode(profileEnvelopeBytes(publication.envelope)),
+    profileAssociatedData: encode(profileAssociatedData(publication.envelope)),
+    requestSigningBytes: requests.map(value => encode(discoveryRequestBytes(value))) };
 }

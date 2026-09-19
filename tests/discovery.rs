@@ -240,6 +240,10 @@ fn valid_certified_ciphertext_reaches_storage_once() {
         assert_eq!(aad[0], "cfrm.cached-profile.aad.v1");
         assert_eq!(aad.as_array().unwrap().len(), 10);
         assert!(!String::from_utf8(profile_aad_bytes(&publication.envelope).unwrap()).unwrap().contains(&publication.envelope.profile_digest));
+        let mut before_encryption = publication.envelope.clone();
+        before_encryption.profile_digest.clear();
+        assert_eq!(profile_aad_bytes(&before_encryption).unwrap(), profile_aad_bytes(&publication.envelope).unwrap());
+        assert_eq!(profile_signing_bytes(&before_encryption), Err(Error::InvalidInput));
     }
 }
 

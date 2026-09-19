@@ -6,7 +6,7 @@ async function epochCopy(value) {
   exact(value, ['communityId', 'epochId', 'validFrom', 'issueUntil', 'expiresAt', 'publicKeyDer', 'redemptionPublicKey']);
   const epoch = structuredClone(value);
   scope(epoch.communityId); scope(epoch.epochId);
-  if (!epoch.epochId.startsWith('cfrm.key-access.v1/')) reject();
+  if (!epoch.epochId.startsWith('cfrm.key-access.v1/') || epoch.epochId.length === 'cfrm.key-access.v1/'.length) reject();
   positive(epoch.validFrom); positive(epoch.issueUntil); positive(epoch.expiresAt);
   if (epoch.validFrom >= epoch.issueUntil || epoch.issueUntil > epoch.expiresAt) reject();
   decode(epoch.redemptionPublicKey, 32); decode(epoch.publicKeyDer, undefined, 800);
@@ -24,6 +24,7 @@ export async function keyAccessIssueBytes(value) {
   scope(value.communityId); positive(value.issuedAt); positive(value.expiresAt);
   if (value.expiresAt <= value.issuedAt) reject();
   for (const field of ['memberId', 'chatPublicKey', 'contextId', 'requestId']) decode(value[field], 32);
+  if (decode(value.requestId, 32).every(byte => byte === 0)) reject();
   const blinded = decode(value.blindedRequest, 416);
   if (encode(blinded.subarray(0, 32)) !== value.contextId) reject();
   return json(['cfrm.key-access.issue.v1', value.communityId, value.memberId, value.chatPublicKey,

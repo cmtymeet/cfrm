@@ -43,6 +43,9 @@ function parse(bytes, config) {
   if (!(bytes instanceof Uint8Array) || bytes.length > config.limits.maxFrameBytes) reject();
   return JSON.parse(textDecoder.decode(bytes));
 }
+function boundedAccessProof(value, config) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || json(value).length > config.limits.maxProofBytes) reject();
+}
 async function timed(operation, config, onLate) {
   let timer, expired = false;
   const work = Promise.resolve().then(operation);
@@ -127,11 +130,12 @@ export function createProfileKeyService(options) {
         await matches(value, snapshot);
         return frame({ challenge: { authority, delegation: snapshot.delegation ?? null, value, signature } }, config);
       }
-      exact(input, ['read']); exact(input.read, ['challenge', 'holderSignature', 'presentation', 'ticket']);
-      const { challenge: value, holderSignature, presentation, ticket } = input.read;
+      exact(input, ['read']); exact(input.read, ['challenge', 'holderSignature', 'presentation', 'accessProof', 'ticket']);
+      const { challenge: value, holderSignature, presentation, accessProof, ticket } = input.read;
       await matches(value, snapshot);
       await verifySignature(identity.authority.admission.chatPublicKey, holderSignature, keyChallengeBytes(value));
       await validateEligibilityPresentation(presentation, config.publicIssuer, value, config.limits.maxProofBytes);
+      boundedAccessProof(accessProof, config);
       const challengeDigest = await digest(keyChallengeBytes(value));
       live(snapshot); challengeFresh(value, config);
       if (consumed.has(challengeDigest) || consumed.size >= config.limits.maxReplayEntries || verifying >= config.limits.maxConcurrentProofs) reject();
@@ -143,7 +147,7 @@ export function createProfileKeyService(options) {
         if (await verifyProof(request, structuredClone(presentation)) !== true) reject();
         await matches(value, snapshot);
         if (await authorize({ publication: structuredClone(snapshot.publication), challenge: structuredClone(value),
-          presentation: structuredClone(presentation) }) !== true) reject();
+          presentation: structuredClone(presentation), accessProof: structuredClone(accessProof) }) !== true) reject();
         await matches(value, snapshot);
         if (await verifyTicket({ ticket: structuredClone(ticket), challengeDigest,
           expiresAt: value.expiresAt, now: config.clock() }) !== true) reject();
@@ -164,10 +168,10 @@ export function createProfileKeyService(options) {
  * keys only through the separately supplied member-owned P2P capability. */
 export function createProfileReader(options) {
   const config = configuration(options);
-  for (const name of ['proveEligibility', 'acquireTicket', 'acceptPublication']) if (typeof options[name] !== 'function') reject();
+  for (const name of ['proveEligibility', 'proveAccess', 'acquireTicket', 'acceptPublication']) if (typeof options[name] !== 'function') reject();
   if (typeof options.cache?.fetch !== 'function' || typeof options.memberTransport?.open !== 'function') reject();
   const fetch = options.cache.fetch.bind(options.cache), open = options.memberTransport.open.bind(options.memberTransport),
-    prove = options.proveEligibility, acquire = options.acquireTicket, accept = options.acceptPublication;
+    prove = options.proveEligibility, proveAccess = options.proveAccess, acquire = options.acquireTicket, accept = options.acceptPublication;
   return Object.freeze({ async read({ memberId, holderMemberId }) {
     decode(memberId, 32); decode(holderMemberId, 32);
     const publication = await verifyCachedProfile(await fetch(memberId), { ...config, now: config.clock(), expectedMemberId: memberId });
@@ -199,10 +203,12 @@ export function createProfileReader(options) {
       const presentation = await prove(request);
       await validateEligibilityPresentation(presentation, config.publicIssuer, value, config.limits.maxProofBytes);
       challengeFresh(value, config);
+      const accessProof = await proveAccess({ challenge: structuredClone(value), publication: structuredClone(publication) });
+      boundedAccessProof(accessProof, config); challengeFresh(value, config);
       const challengeDigest = await digest(keyChallengeBytes(value));
       const ticket = await acquire({ challengeDigest, expiresAt: value.expiresAt });
       challengeFresh(value, config);
-      const last = parse(await timed(() => connection.exchange(frame({ read: { challenge: value, holderSignature: signature, presentation, ticket } }, config)), config), config);
+      const last = parse(await timed(() => connection.exchange(frame({ read: { challenge: value, holderSignature: signature, presentation, accessProof, ticket } }, config)), config), config);
       exact(last, ['grant']); const { grant } = last;
       const message = grantBytes(grant);
       if (grant.challengeDigest !== challengeDigest || grant.expiresAt > value.expiresAt ||

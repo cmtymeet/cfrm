@@ -43,6 +43,9 @@ underscore. The trusted server registry assigns each field either an inclusive
 integer range or a sorted, unique integer enumeration. Unknown names and values
 outside those domains are rejected. The registry is deployment configuration;
 there are no implicit demographic fields or product defaults.
+Domain validation and an owner signature establish permitted encoding and
+ownership, not the truth of a claimed attribute. Issuer-backed attribute proofs
+remain a separate eligibility integration.
 
 AES-GCM additional authenticated data uses the same ordered metadata, a separate
 domain and no ciphertext digest:

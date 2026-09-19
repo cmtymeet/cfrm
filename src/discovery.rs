@@ -128,6 +128,18 @@ pub struct VerifiedDiscoveryRequest {
     pub(crate) operation: DiscoveryOperation,
 }
 
+impl VerifiedDiscoveryRequest {
+    pub fn trust_digest(&self) -> &str { &self.trust_digest }
+    pub fn community_id(&self) -> &str { &self.community_id }
+    pub fn member_id(&self) -> &str { &self.member_id }
+    pub fn chat_public_key(&self) -> &str { &self.chat_public_key }
+    pub fn session_id(&self) -> &str { &self.session_id }
+    pub fn request_id(&self) -> &str { &self.request_id }
+    pub fn issued_at(&self) -> u64 { self.issued_at }
+    pub fn expires_at(&self) -> u64 { self.expires_at }
+    pub fn operation(&self) -> &DiscoveryOperation { &self.operation }
+}
+
 /// Execute validation, replay consumption, quotas and the operation atomically.
 /// Do not retain a request, query, fetch target, or response after the call.
 /// Replay markers must be opaque hashes, without their operation or target.
@@ -166,7 +178,7 @@ impl DiscoveryLimits {
         if self.max_ciphertext_bytes < 16 || self.max_ciphertext_bytes > 16 * 1024 * 1024
             || self.max_record_bytes > self.max_request_bytes
             || self.max_record_bytes > self.max_response_bytes
-            || self.max_results > self.max_scan || self.registry.len() > 32
+            || self.max_results > self.max_scan || self.max_scan == usize::MAX || self.registry.len() > 32
             || self.max_discriminator_bytes > 4096 {
             return Err(Error::InvalidInput);
         }
@@ -204,7 +216,7 @@ fn profile_shape(profile: &ProfileEnvelope) -> Result<(), Error> {
         || profile.expires_at <= profile.issued_at || profile.expires_at > MAX_INTEGER {
         return Err(Error::InvalidInput);
     }
-    for value in [&profile.member_id, &profile.chat_public_key, &profile.profile_epoch, &profile.profile_digest] {
+    for value in [&profile.member_id, &profile.chat_public_key, &profile.profile_epoch] {
         admission::decode::<32>(value)?;
     }
     admission::decode::<12>(&profile.nonce)?;
@@ -219,6 +231,7 @@ pub fn ciphertext_digest(ciphertext: &[u8]) -> String { admission::digest(cipher
 /// binding, so an index cannot mix filters from one version with another blob.
 pub fn profile_signing_bytes(profile: &ProfileEnvelope) -> Result<Vec<u8>, Error> {
     profile_shape(profile)?;
+    admission::decode::<32>(&profile.profile_digest)?;
     let pairs: Vec<_> = profile.discriminators.iter().collect();
     serde_json::to_vec(&serde_json::json!([
         "cfrm.cached-profile.v1", profile.community_id, profile.member_id,

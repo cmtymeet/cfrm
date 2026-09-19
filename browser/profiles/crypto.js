@@ -111,27 +111,31 @@ export async function signing(identity, bytes) {
   return signature;
 }
 export async function wrappingKeyPair() {
-  return crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']);
+  return crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']);
 }
 export async function wrappingPublicKey(pair) {
   return encode(new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey)));
 }
-async function derived(privateKey, publicKey) {
+async function derived(privateKey, publicKey, aad) {
   const peer = await crypto.subtle.importKey('raw', decode(publicKey, 65), { name: 'ECDH', namedCurve: 'P-256' }, false, []);
   // Every wrapping operation generates a new sender ECDH key and nonce. Its
   // transcript is authenticated both by AES-GCM AAD and an Ed25519 signature.
-  return crypto.subtle.deriveKey({ name: 'ECDH', public: peer }, privateKey,
-    { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: peer }, privateKey, 256));
+  try {
+    const material = await crypto.subtle.importKey('raw', shared, 'HKDF', false, ['deriveKey']);
+    return await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: decode(await digest(aad), 32),
+      info: utf8.encode('cfrm.profile-key-wrap.v1') }, material, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  } finally { shared.fill(0); }
 }
 export async function wrapSecret(secret, recipientPublicKey, aad) {
   const pair = await wrappingKeyPair(), nonce = random(12);
-  const key = await derived(pair.privateKey, recipientPublicKey);
+  const key = await derived(pair.privateKey, recipientPublicKey, aad);
   const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: aad }, key, secret);
   return { publicKey: await wrappingPublicKey(pair), nonce: encode(nonce), ciphertext: encode(new Uint8Array(ciphertext)) };
 }
 export async function unwrapSecret(wrapped, recipientPrivateKey, aad) {
   exact(wrapped, ['publicKey', 'nonce', 'ciphertext']);
-  const key = await derived(recipientPrivateKey, wrapped.publicKey);
+  const key = await derived(recipientPrivateKey, wrapped.publicKey, aad);
   const plaintext = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: decode(wrapped.nonce, 12), additionalData: aad },
     key, decode(wrapped.ciphertext, 48)));
   if (plaintext.length !== 32) reject();

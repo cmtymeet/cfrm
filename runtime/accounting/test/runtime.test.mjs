@@ -1,0 +1,69 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { generateKeyPairSync, sign, verify } from 'node:crypto';
+import { loadArtifacts, resourceLimits } from '../artifacts.mjs';
+import { AccountClient, accountAcceptanceBytes, accountRequestBytes, verifyAccountAcceptance } from '../client.mjs';
+import { policyDigest } from '../hashes.mjs';
+import { validateStatement } from '../runtime.mjs';
+import { cat, be, sha, hex } from '../encoding.mjs';
+import { statementBytes } from '../witness.mjs';
+
+const policy = {initialCredit:3,maximumAvailable:4,outgoingReservation:1,incomingReservation:1,
+  policyRevision:1,policyValidFrom:1,policyValidUntil:10000,newcomerPeriod:100,rateWindow:100,
+  newcomerAdmissions:2,maximumAdmissions:4,refillPeriod:100,refillUnits:1,abandonAfter:500};
+const field = n => [...new Uint8Array(31),n], bytes = n => Array(32).fill(n);
+const scope = {circuitDigest:bytes(41),verifyingKeyDigest:bytes(42)};
+const text = value => new TextEncoder().encode(value);
+const identity={grant:{version:1,issuer_key_id:'test',community_id:'test',member_id:'test',chat_public_key:'test',policy_digest:'test',issued_at:100,expires_at:1000,signature:'test'},
+  authorization:{version:1,communityId:'test',memberId:'test',rootPublicKey:'test',devicePublicKey:'test',issuedAt:100,expiresAt:1000,signature:'test'}};
+async function statement() {
+  return {protocolVersion:2,community:bytes(1),owner:bytes(2),policyDigest:Array.from(await policyDigest(Uint8Array.from(bytes(1)),policy)),
+    enrollmentRoot:field(3),now:110,validUntil:200,genesis:true,previousVersion:0,nextVersion:0,
+    previousState:field(0),nextState:field(4),settlementMarker:field(0),policy:{...policy}};
+}
+function key() { const pair=generateKeyPairSync('ed25519'); return {...pair,
+  raw:new Uint8Array(pair.publicKey.export({format:'der',type:'spki'}).subarray(-32))}; }
+
+test('artifact loading pins manifest and every byte, bounds cumulative bytes and rejects duplicate setup', async () => {
+  const files={'circuit.json':text(JSON.stringify({bytecode:'test'})),'vk.bin':new Uint8Array([1]),
+    'setup/g1.dat':new Uint8Array(32),'setup/g2.dat':new Uint8Array([2])};
+  const manifest={accountingMode:'account-state-v2',hashScheme:'poseidon2-bn254-fixed-128-v1',numPoints:1,
+    circuitSha256:hex(await sha(files['circuit.json'])),vkSha256:hex(await sha(files['vk.bin'])),setup:[]};
+  for(const name of ['g1.dat','g2.dat'])manifest.setup.push({name,bytes:files['setup/'+name].length,sha256:hex(await sha(files['setup/'+name]))});
+  const make=async()=>{const manifestBytes=text(JSON.stringify(manifest));return {manifestBytes,manifestSha256:hex(await sha(manifestBytes)),readArtifact:async name=>files[name]};};
+  const options=await make(); assert.equal((await loadArtifacts(options)).verificationKey[0],1);
+  files['vk.bin'][0]=4; await assert.rejects(loadArtifacts(options),/digest/);files['vk.bin'][0]=1;
+  await assert.rejects(loadArtifacts({...options,manifestSha256:'00'.repeat(32)}),/pin/);
+  await assert.rejects(loadArtifacts({...options,limits:{maxTotalBytes:1}}),/total/);
+  manifest.setup[1]=manifest.setup[0];await assert.rejects(loadArtifacts(await make()),/setup/);
+  assert.throws(()=>resourceLimits({memoryPages:65536}),/limits/);
+});
+
+test('live statement times and policy encoding replace synthetic acceptedTimes lists', async () => {
+  const s=await statement();s.now=Date.UTC(2026,8,19)/1000;s.policy.policyValidUntil=s.now+10000;
+  s.validUntil=(Math.floor(s.now/s.policy.rateWindow)+1)*s.policy.rateWindow;
+  s.policyDigest=Array.from(await policyDigest(Uint8Array.from(s.community),s.policy));
+  assert.equal((await validateStatement(s)).length,243);
+  const changed=structuredClone(s);changed.policy.abandonAfter+=1;await assert.rejects(validateStatement(changed),/policy/);
+  const extra={...s,privateOpening:{}};await assert.rejects(validateStatement(extra),/Exact/);
+});
+
+test('signed public request has the Rust transcript; verified response must bind the exact retry', async () => {
+  const device=key(),operator=key(),s=await statement();let transported;
+  const client=new AccountClient({operatorPublicKey:operator.raw,sign:async bytes=>sign(null,bytes,device.privateKey),
+    transport:async envelope=>{transported=envelope;const r=envelope.request;
+      const a={statement:r.statement,requestId:r.requestId,requestDigest:Array.from(await sha(cat(await accountRequestBytes(r),Buffer.from(r.signature,'base64url')))),
+        proofScope:r.proofScope,acceptedAt:111,signature:''};
+      a.signature=sign(null,await accountAcceptanceBytes(a),operator.privateKey).toString('base64url');return {action:'apply',value:a};}});
+  const request=await client.prepareApply({record:{statement:s,proof:'010203',proofScope:scope},chatPublicKey:Buffer.from(device.raw).toString('base64url'),expiresAt:180,requestId:bytes(9)});
+  const independent=cat(text('cfrm.account.request.v1\0'),bytes(9),scope.circuitDigest,scope.verifyingKeyDigest,device.raw,
+    be(110,8),be(180,8),await sha(statementBytes(s)),await sha(new Uint8Array([1,2,3])));
+  assert(verify(null,independent,device.publicKey,Buffer.from(request.signature,'base64url')));
+  const acceptance=await client.apply({...identity,request});
+  assert.equal(transported.action,'apply');assert.equal(acceptance.statement.nextVersion,0);
+  const altered=structuredClone(request);altered.requestId[0]^=1;
+  await assert.rejects(verifyAccountAcceptance(acceptance,operator.raw,altered),/match/);
+  await assert.rejects(client.prepareApply({record:{statement:s,proof:'01',proofScope:scope,input:{secret:true}},chatPublicKey:request.chatPublicKey,expiresAt:180}),/Public/);
+  await assert.rejects(client.apply({grant:{},authorization:{},request:{...request,input:{secret:true}}}),/Exact/);
+  await assert.rejects(client.apply({grant:{...identity.grant,privateOpening:{}},authorization:identity.authorization,request}),/Exact public/);
+});

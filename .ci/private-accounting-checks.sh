@@ -77,6 +77,8 @@ capture() {
   exit "$result"
 }
 trap capture EXIT
+timeout 600 npm ci --prefix ../../runtime/accounting --ignore-scripts --no-audit --no-fund \
+  2>&1 | tee "$artifact_dir/runtime-npm-install.log"
 if test "${RESOLVE_DEPENDENCIES:-0}" = 1; then
   timeout 600 npm install --package-lock-only --ignore-scripts --no-audit --no-fund \
     2>&1 | tee "$artifact_dir/npm-resolution.log"

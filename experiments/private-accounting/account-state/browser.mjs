@@ -1,3 +1,4 @@
+import { proveAccountCandidate } from '../../../runtime/accounting/runtime.mjs';
 import { Noir } from '@noir-lang/noir_js';
 import { UltraHonkBackend, UltraHonkVerifierBackend } from '@aztec/bb.js';
 import { OPTIONS, hex, unhex, random, sha, canonicalSignature, be, memberBytes } from '../common.mjs';
@@ -85,13 +86,12 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   const backend = new UltraHonkBackend(circuit.bytecode, api), verifier = new UltraHonkVerifierBackend(api);
   async function prove(candidate, ownerIndex, label) {
     stage(label);
-    const executionStart = performance.now();
-    const executed = await noir.execute(noirInput(candidate.input));
-    const witnessMs = performance.now() - executionStart, started = performance.now();
-    const proof = await backend.generateProof(executed.witness, OPTIONS);
-    const provingMs = performance.now() - started, verifyingAt = performance.now();
-    assert(await verifier.verifyProof({ ...proof, verificationKey }, OPTIONS), label);
-    const verificationMs = performance.now() - verifyingAt;
+    const generated = await proveAccountCandidate({ noir, backend, verifier, verificationKey, candidate,
+      scope: { circuitDigest: Array.from(unhex(manifest.circuitSha256)), verifyingKeyDigest: Array.from(unhex(manifest.vkSha256)) },
+      maxProofBytes: 1024 * 1024 });
+    const proof = { proof: unhex(generated.record.proof), publicInputs: generated.publicInputs };
+    const { witnessMs, provingMs, verificationMs } = generated;
+    assert(generated.record.proof.length > 0, label); // Shared production prover verified the generated proof.
     const expected = publicInputValues(candidate.statement);
     assert(proof.publicInputs.length === PUBLIC_INPUT_COUNT && expected.length === PUBLIC_INPUT_COUNT
       && proof.publicInputs.every((value, index) => BigInt(value) === expected[index]), 'exact v2 public encoding without private action/role/outcome');

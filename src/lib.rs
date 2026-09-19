@@ -4,11 +4,19 @@
 pub mod accounting;
 #[cfg(feature = "sqlite")]
 pub mod accounting_ledger;
+#[cfg(all(feature = "sqlite", not(target_arch = "wasm32")))]
+pub mod accounting_service;
 mod accounting_policy;
 pub mod admission;
 #[cfg(feature = "sqlite")]
 pub mod allocation;
 pub mod board;
+pub mod discovery;
+pub mod discovery_store;
+#[cfg(all(feature = "discovery-api", not(target_arch = "wasm32")))]
+pub mod discovery_api;
+#[cfg(all(feature = "discovery-valkey", not(target_arch = "wasm32")))]
+pub mod discovery_valkey;
 #[cfg(all(feature = "browser", target_arch = "wasm32"))]
 pub mod browser;
 #[cfg(all(feature = "permit-issuer", not(target_arch = "wasm32")))]

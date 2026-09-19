@@ -15,23 +15,27 @@ export function resourceLimits(input = {}) {
 export async function loadArtifacts({ manifestBytes, manifestSha256, readArtifact, limits = {}, loadBrowserWasm = false }) {
   const bound = resourceLimits(limits);
   if (!(manifestBytes instanceof Uint8Array) || manifestBytes.length > 1024 * 1024
-      || !/^[0-9a-f]{64}$/.test(manifestSha256)
-      || hex(await sha(manifestBytes)) !== manifestSha256) throw new Error('Manifest pin mismatch');
-  const manifest = JSON.parse(new TextDecoder().decode(manifestBytes));
+      || !/^[0-9a-f]{64}$/.test(manifestSha256)) throw new Error('Manifest pin mismatch');
+  // The provider may retain and mutate its buffers while WebCrypto is awaiting.
+  // Hash and parse the same private snapshot, never the caller-owned storage.
+  const manifestSnapshot = new Uint8Array(manifestBytes);
+  if (hex(await sha(manifestSnapshot)) !== manifestSha256) throw new Error('Manifest pin mismatch');
+  const manifest = JSON.parse(new TextDecoder().decode(manifestSnapshot));
   if (manifest.version !== 1 || manifest.compiler !== '1.0.0-beta.26' || manifest.backend !== '5.0.0'
       || manifest.verifierTarget !== 'noir-recursive'
       || manifest.accountingMode !== 'account-state-v2' || manifest.hashScheme !== 'poseidon2-bn254-fixed-128-v1'
       || !Number.isSafeInteger(manifest.numPoints) || manifest.numPoints <= 0 || manifest.numPoints > 9 * 131072
       || !Array.isArray(manifest.setup) || manifest.setup.length !== 2) throw new Error('Unsupported account artifacts');
-  let total = manifestBytes.length;
+  let total = manifestSnapshot.length;
   async function read(name, digest, length) {
     if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error('Missing artifact pin');
-    const data = await readArtifact(name, bound.maxArtifactBytes);
-    if (!(data instanceof Uint8Array) || data.length > bound.maxArtifactBytes
-        || (length !== undefined && data.length !== length)) throw new Error('Artifact size bound');
+    const provided = await readArtifact(name, bound.maxArtifactBytes);
+    if (!(provided instanceof Uint8Array) || provided.length > bound.maxArtifactBytes
+        || (length !== undefined && provided.length !== length)) throw new Error('Artifact size bound');
+    const data = new Uint8Array(provided);
     total += data.length;
     if (total > bound.maxTotalBytes || hex(await sha(data)) !== digest) throw new Error('Artifact digest/total bound');
-    return data.slice();
+    return data;
   }
   const circuitBytes = await read('circuit.json', manifest.circuitSha256);
   const verificationKey = await read('vk.bin', manifest.vkSha256);
@@ -44,14 +48,30 @@ export async function loadArtifacts({ manifestBytes, manifestSha256, readArtifac
     setup[item.name] = await read('setup/' + item.name, item.sha256, item.bytes);
   }
   if (setup['g1.dat'].length !== manifest.numPoints * 32) throw new Error('Setup point count mismatch');
+  let browserWasm;
   if (loadBrowserWasm) {
     if (!Array.isArray(manifest.wasm) || manifest.wasm.length !== 1
         || manifest.wasm[0].name !== 'barretenberg-threads.wasm') throw new Error('Pinned browser Wasm required');
     const wasm=manifest.wasm[0];
     if (!Number.isSafeInteger(wasm.bytes) || wasm.bytes <= 8) throw new Error('Browser Wasm size');
-    await read(wasm.name,wasm.sha256,wasm.bytes);
+    browserWasm = await read(wasm.name,wasm.sha256,wasm.bytes);
   }
-  return { manifest, circuit, verificationKey, setup, limits: bound };
+  return { manifest, circuit, verificationKey, setup, browserWasm, limits: bound };
+}
+
+// bb.js 5.0.0 accepts only a URL and rewrites its final basename to add
+// '-threads'. Put that basename in the fragment: its rewrite cannot change the
+// Blob resource, whose bytes are an immutable copy of the verified snapshot.
+// Source: @aztec/bb.js@5.0.0/dest/browser/barretenberg_wasm/fetch_code/browser/index.js
+// The backend compiles and initializes its worker before create resolves, so
+// no Blob URL is needed after that point. CSP connect-src must allow blob:.
+export async function withPinnedBrowserWasm(bytes, create) {
+  if (!(bytes instanceof Uint8Array) || bytes.length <= 8 || typeof create !== 'function'
+      || typeof globalThis.Blob !== 'function' || typeof URL.createObjectURL !== 'function'
+      || typeof URL.revokeObjectURL !== 'function') throw new Error('Pinned browser Wasm bytes required');
+  const blobUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/wasm' }));
+  try { return await create(`${blobUrl}#/barretenberg.wasm`); }
+  finally { URL.revokeObjectURL(blobUrl); }
 }
 
 /** Explicit caller-selected artifact URL; enforces streaming bounds before allocation. */

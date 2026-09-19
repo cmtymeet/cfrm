@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign, verify } from 'node:crypto';
-import { loadArtifacts, resourceLimits } from '../artifacts.mjs';
+import { loadArtifacts, resourceLimits, withPinnedBrowserWasm } from '../artifacts.mjs';
 import { AccountClient, accountAcceptanceBytes, accountRequestBytes, verifyAccountAcceptance } from '../client.mjs';
 import { policyDigest } from '../hashes.mjs';
 import { validateStatement } from '../runtime.mjs';
@@ -38,6 +38,61 @@ test('artifact loading pins manifest and every byte, bounds cumulative bytes and
   await assert.rejects(loadArtifacts({...options,limits:{maxTotalBytes:1}}),/total/);
   manifest.setup[1]=manifest.setup[0];await assert.rejects(loadArtifacts(await make()),/setup/);
   assert.throws(()=>resourceLimits({memoryPages:65536}),/limits/);
+});
+
+test('manifest and artifact bytes are snapshotted before asynchronous digest checks', async () => {
+  const files={'circuit.json':text(JSON.stringify({bytecode:'verified-bytecode'})),'vk.bin':new Uint8Array([1,2,3]),
+    'setup/g1.dat':new Uint8Array(32),'setup/g2.dat':new Uint8Array([2]),
+    'barretenberg-threads.wasm':new Uint8Array([0,97,115,109,1,0,0,0,0,1,0])};
+  const manifest={version:1,compiler:'1.0.0-beta.26',backend:'5.0.0',verifierTarget:'noir-recursive',
+    accountingMode:'account-state-v2',hashScheme:'poseidon2-bn254-fixed-128-v1',numPoints:1,
+    circuitSha256:hex(await sha(files['circuit.json'])),vkSha256:hex(await sha(files['vk.bin'])),setup:[],wasm:[]};
+  for(const name of ['g1.dat','g2.dat'])manifest.setup.push({name,bytes:files['setup/'+name].length,sha256:hex(await sha(files['setup/'+name]))});
+  manifest.wasm.push({name:'barretenberg-threads.wasm',bytes:files['barretenberg-threads.wasm'].length,
+    sha256:hex(await sha(files['barretenberg-threads.wasm']))});
+  const manifestBytes=text(JSON.stringify(manifest)),manifestSha256=hex(await sha(manifestBytes));
+  const expectedWasm=files['barretenberg-threads.wasm'].slice();
+  const original=crypto.subtle.digest,ownDescriptor=Object.getOwnPropertyDescriptor(crypto.subtle,'digest');
+  let current='manifest';
+  Object.defineProperty(crypto.subtle,'digest',{configurable:true,value:function(algorithm,data){
+    const result=original.call(this,algorithm,data);
+    // WebCrypto has copied its input. Mutate the provider's retained backing
+    // buffer before digest completion; returned/parsed bytes must stay pinned.
+    if(current==='manifest')manifestBytes.fill(0);
+    else if(current==='vk.bin'||current==='barretenberg-threads.wasm')files[current].fill(255);
+    return result;
+  }});
+  try {
+    const loaded=await loadArtifacts({manifestBytes,manifestSha256,loadBrowserWasm:true,
+      readArtifact:async name=>{current=name;return files[name];}});
+    assert.equal(loaded.manifest.numPoints,1);
+    assert.deepEqual(loaded.verificationKey,new Uint8Array([1,2,3]));
+    assert.deepEqual(loaded.browserWasm,expectedWasm);
+    assert.notDeepEqual(loaded.browserWasm,files['barretenberg-threads.wasm']);
+  } finally {
+    if(ownDescriptor)Object.defineProperty(crypto.subtle,'digest',ownDescriptor);
+    else delete crypto.subtle.digest;
+  }
+});
+
+test('bb.js suffix rewriting fetches only immutable pinned Blob bytes and URLs are revoked', async () => {
+  const verified=new Uint8Array([0,97,115,109,1,0,0,0,0,1,0]),expected=verified.slice();
+  let consumedUrl;
+  const received=await withPinnedBrowserWasm(verified,async wasmPath=>{
+    // Exact public bb.js 5.0.0 fetchCode URL behavior; fetch itself is real.
+    const filePath=wasmPath.split('/').slice(0,-1).join('/');
+    const [fileName,...extensions]=wasmPath.split('/').pop().split('.');
+    consumedUrl=`${filePath}/${fileName}-threads.${extensions.join('.')}`;
+    assert.equal(new URL(consumedUrl).protocol,'blob:');
+    verified.fill(255);
+    const response=await fetch(consumedUrl);
+    return new Uint8Array(await response.arrayBuffer());
+  });
+  assert.deepEqual(received,expected);
+  await assert.rejects(fetch(consumedUrl));
+  let failedUrl;
+  await assert.rejects(withPinnedBrowserWasm(expected,async wasmPath=>{failedUrl=wasmPath;throw new Error('init failed');}),/init failed/);
+  await assert.rejects(fetch(failedUrl));
 });
 
 test('live statement times and policy encoding replace synthetic acceptedTimes lists', async () => {

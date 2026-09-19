@@ -12,7 +12,6 @@ const options = {
   manifestBytes,              // Uint8Array from the released manifest
   manifestSha256,             // independently pinned by the embedding application
   readArtifact,               // async (fixedName, maximumBytes) => Uint8Array
-  browserWasmPath: '/release/barretenberg.wasm', // browser only; see below
   limits: { memoryPages: 32768, maxProofBytes: 20000 },
 };
 const runtime = await createAccountProver(options);
@@ -26,12 +25,15 @@ const record = await runtime.prove(candidate);
 The application verifies enrollment signatures before supplying `verifiedEntries`.
 The browser factory uses the existing WasmWorker backend and requires
 cross-origin isolation/SharedArrayBuffer. Serve the hash-pinned
-`barretenberg-threads.wasm` beside the other immutable release artifacts. The
-pinned backend maps the base `browserWasmPath` to its `-threads.wasm` sibling.
-`readArtifact` must read from that same immutable release location; the factory
-checks the selected Wasm bytes against the pinned manifest before initializing
-the backend. No remote or `data:` fallback is selected. The embedding supplies
-the same-origin asset server and compatible CSP/worker headers.
+`barretenberg-threads.wasm` beside the other immutable release artifacts.
+`readArtifact` is the only download path. The factory hashes private snapshots
+of every artifact and passes the verified Wasm through an immutable Blob to
+the backend; it never fetches a second network copy. The pinned bb.js 5 loader
+adds `-threads` to a basename placed in the Blob URL fragment, preserving the
+underlying Blob identity. The URL is revoked after backend initialization,
+including failures. The embedding supplies the asset server, isolation/worker
+headers and CSP allowing `connect-src 'self' blob:` for this local fetch.
+No independently supplied backend Wasm URL or network fallback is used.
 There is no synthetic roster or accepted-time list. `record` contains only the
 statement, public proof and proof scope. `candidate.input` and `candidate.next`
 contain private material and stay at the holder endpoint. A runtime permits one

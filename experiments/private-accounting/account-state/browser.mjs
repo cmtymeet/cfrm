@@ -541,14 +541,31 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   await releaseBackend();
   stage('production-runtime-factory');
   const manifestBytes=await bytes('/manifest.json'), manifestSha256=hex(await sha(manifestBytes));
-  const runtime=await createAccountProver({manifestBytes,manifestSha256,browserWasmPath:'/barretenberg.wasm',
-    readArtifact:async(name,maximum)=>{const data=await bytes('/'+name);if(data.length>maximum)throw new Error('Factory artifact bound');return data;},
-    limits:{maxProofBytes:20000}});
+  const originalFetch=globalThis.fetch;
+  let wasmNetworkFetches=0,wasmBlobFetches=0,runtime;
+  globalThis.fetch=async function(input,init){
+    const url=new URL(input instanceof Request?input.url:String(input),location.href);
+    if(url.protocol==='blob:'&&url.hash.endsWith('/barretenberg-threads.wasm'))wasmBlobFetches++;
+    if(url.protocol!=='blob:'&&url.pathname.endsWith('/barretenberg-threads.wasm')){
+      wasmNetworkFetches++;
+      // A TOCTOU regression must fail with a corrupted second download, not
+      // accidentally pass because this fixture's asset server is immutable.
+      if(wasmNetworkFetches>1)return new Response(new Uint8Array([255]),{status:200});
+    }
+    return originalFetch.call(globalThis,input,init);
+  };
   try {
+    runtime=await createAccountProver({manifestBytes,manifestSha256,
+      readArtifact:async(name,maximum)=>{const data=await bytes('/'+name);if(data.length>maximum)throw new Error('Factory artifact bound');return data;},
+      limits:{maxProofBytes:20000}});
+  } finally {globalThis.fetch=originalFetch;}
+  try {
+    assert(wasmNetworkFetches===1&&wasmBlobFetches===1,'production factory compiles the verified immutable Wasm without a second network fetch');
     const started=performance.now(),record=await runtime.prove(genesis[0]);
     assert(record.statement.nextVersion===0 && record.proof.length>0,'production browser factory proves the retained private genesis witness');
     assert((await runtime.verify(record)).verified===true,'production browser factory verifies its generated public proof');
-    metrics.runtimeFactory={record,manifestSha256,elapsedMs:performance.now()-started,privateWitnessExported:false,ledgerSubmitted:false};
+    metrics.runtimeFactory={record,manifestSha256,elapsedMs:performance.now()-started,wasmNetworkFetches,wasmBlobFetches,
+      privateWitnessExported:false,ledgerSubmitted:false};
   } finally {await runtime.destroy();}
   metrics.endJsHeapBytes = performance.memory?.usedJSHeapSize ?? null;
   metrics.memoryMeasurement = 'Local JS heap at end; exact peak WASM unknown; harness process samples are separate';

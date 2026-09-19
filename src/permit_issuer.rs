@@ -159,13 +159,27 @@ impl PermitRedeemer {
     /// Forget expired opaque spent-token records while retaining configuration
     /// and the clock floor, so reopening cannot revive an expired epoch.
     pub fn prune_expired(&mut self, now: u64) -> Result<(), Error> {
-        if now < self.epoch.expires_at || now > MAX_INTEGER { return Err(Error::Expired); }
-        let tx=self.connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let floor=stored_integer(tx.query_row("SELECT clock_floor FROM cfrm_redemption_config WHERE singleton=1",[],|row|row.get(0))?)?;
-        if now<floor { return Err(Error::ClockRollback); }
-        tx.execute("DELETE FROM cfrm_redemptions",[])?;
-        tx.execute("UPDATE cfrm_redemption_config SET clock_floor=?1 WHERE singleton=1",[sql_integer(now)?])?;
-        tx.commit()?;Ok(())
+        if now < self.epoch.expires_at || now > MAX_INTEGER {
+            return Err(Error::Expired);
+        }
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let floor = stored_integer(tx.query_row(
+            "SELECT clock_floor FROM cfrm_redemption_config WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )?)?;
+        if now < floor {
+            return Err(Error::ClockRollback);
+        }
+        tx.execute("DELETE FROM cfrm_redemptions", [])?;
+        tx.execute(
+            "UPDATE cfrm_redemption_config SET clock_floor=?1 WHERE singleton=1",
+            [sql_integer(now)?],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn open(

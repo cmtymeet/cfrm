@@ -253,7 +253,7 @@ const server = createServer(async (request, response) => {
     response.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
     response.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
     response.setHeader('Cache-Control', 'no-store');
-    response.setHeader('Content-Security-Policy', "default-src 'none'; connect-src 'self'; worker-src 'self' blob:; script-src 'self' 'wasm-unsafe-eval'; object-src 'none'");
+    response.setHeader('Content-Security-Policy', "default-src 'none'; connect-src 'self' blob:; worker-src 'self' blob:; script-src 'self' 'wasm-unsafe-eval'; object-src 'none'");
     const pathname = new URL(request.url, 'http://localhost').pathname;
     if (pathname === '/test-config.json' && accountingMode === 'account-state-v2') {
       if (request.method !== 'GET') { response.writeHead(405).end(); return; }

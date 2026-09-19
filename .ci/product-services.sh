@@ -41,7 +41,7 @@ if test -n "${WASM_LINKER:-}"; then
   test -x "$WASM_LINKER"
   export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER="$WASM_LINKER"
 fi
-timeout 1200 cargo test --locked --all-features --tests -- --test-threads=2 2>&1 | tee "$artifact_dir/native.log" || result=$?
+timeout 1200 cargo test --locked --all-features --tests --no-fail-fast -- --test-threads=2 2>&1 | tee "$artifact_dir/native.log" || result=$?
 timeout 1200 cargo check --locked --target wasm32-unknown-unknown --no-default-features --features browser --lib 2>&1 | tee "$artifact_dir/wasm.log" || result=$?
 timeout 180 node --test test/*.test.js 2>&1 | tee "$artifact_dir/browser-js.log" || result=$?
 if test -z "${BROWSER_BIN:-}"; then

@@ -5,7 +5,6 @@ edition = "2021"
 description = "Portable authenticated meeting board and operator introduction allocations"
 repository = "https://github.com/corbet-labs/cfrm"
 license-file = "LICENSE.md"
-publish = false
 
 [lib]
 crate-type = ["rlib", "cdylib"]

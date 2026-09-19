@@ -5,7 +5,7 @@ use crate::{
     discovery::{CachedProfile, DiscoveryLimits, DiscoveryOperation, DiscoveryResponse,
         DiscoveryStore, VerifiedDiscoveryRequest},
     discovery_control::SqliteDiscoveryControl,
-    discovery_store::summary,
+    discovery_store::{summary, QueryPage},
     Error,
 };
 use redis::ConnectionLike;
@@ -88,6 +88,12 @@ return redis.call('GET', KEYS[1])
 
 impl ValkeyDiscoveryStore {
     pub fn connect(config: ValkeyConfig, control: Arc<SqliteDiscoveryControl>) -> Result<Self, Error> {
+        // redis disables rustls' default features and uses ClientConfig::builder.
+        // Select the enabled provider explicitly, while respecting an embedding
+        // that already installed another reviewed process-wide provider.
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
         if !scope(&config.namespace) || config.pool_size == 0 || config.pool_size > 1024
             || config.connect_timeout.is_zero() || config.io_timeout.is_zero()
             || config.pool_timeout.is_zero() { return Err(Error::InvalidInput); }
@@ -161,17 +167,15 @@ impl DiscoveryStore for ValkeyDiscoveryStore {
                 let candidates: Vec<String> = redis::cmd("ZRANGEBYLEX").arg(&catalog_key)
                     .arg(lower).arg("+").arg("LIMIT").arg(0).arg(limits.max_scan + 1)
                     .query(&mut *connection).map_err(|_| Error::Storage)?;
-                let mut entries = Vec::new();
+                let mut page = QueryPage::new(limits.max_response_bytes)?;
                 let mut scanned = 0;
-                let mut last = None;
                 let mut more = false;
                 for member in candidates {
-                    if scanned >= limits.max_scan || entries.len() >= *limit { more = true; break; }
-                    scanned += 1;
-                    last = Some(member.clone());
+                    if scanned >= limits.max_scan || page.len() >= *limit { more = true; break; }
+                    let mut entry = None;
                     if let Some((publication, until)) = self.fetch(&mut connection, &prefix, &request.community_id, &member, now)? {
                         if filters.iter().all(|(key, value)| publication.envelope.discriminators.get(key) == Some(value)) {
-                            entries.push(summary(&publication, until));
+                            entry = Some(summary(&publication, until));
                         }
                     } else {
                         // Only delete an index row if it is still expired atomically.
@@ -179,8 +183,10 @@ impl DiscoveryStore for ValkeyDiscoveryStore {
                             .key(&catalog_key).key(&live_key).key(format!("{prefix}:profile:{member}"))
                             .arg(&member).arg(now).invoke(&mut *connection).map_err(|_| Error::Storage)?;
                     }
+                    if !page.consider(&member, entry)? { more = true; break; }
+                    scanned += 1;
                 }
-                Ok(DiscoveryResponse::Page { entries, next_cursor: if more { last } else { None } })
+                Ok(page.finish(more))
             }
             _ => Ok(DiscoveryResponse::Updated),
         }

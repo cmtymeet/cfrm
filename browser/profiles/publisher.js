@@ -54,6 +54,8 @@ export async function createProfilePublisher(options) {
     active = candidate; pending = null;
     previous?.secret.fill(0);
     await save(checkpoint()); live();
+    if (typeof options.cache.confirmPublication === 'function') await options.cache.confirmPublication(structuredClone(active.publication));
+    live();
     return structuredClone(active.publication);
   }
   return Object.freeze({
@@ -71,8 +73,21 @@ export async function createProfilePublisher(options) {
     async retryPending() {
       live(); if (busy) reject(); busy = true;
       try {
-        if (!pending) { if (!active) reject(); await save(checkpoint()); return structuredClone(active.publication); }
+        if (!pending) {
+          if (!active) reject(); await save(checkpoint());
+          if (typeof options.cache.confirmPublication === 'function') await options.cache.confirmPublication(structuredClone(active.publication));
+          return structuredClone(active.publication);
+        }
         return await commitPending();
+      } finally { busy = false; }
+    },
+    async expire() {
+      live(); if (busy) reject(); busy = true;
+      try {
+        const now = config.clock();
+        if (active && active.publication.envelope.expiresAt <= now) { active.secret.fill(0); active = null; }
+        if (pending && pending.publication.envelope.expiresAt <= now) { pending.secret.fill(0); pending = null; }
+        await save(checkpoint()); live();
       } finally { busy = false; }
     },
     currentPublication() { live(); return active ? structuredClone(active.publication) : null; },

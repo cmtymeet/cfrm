@@ -76,6 +76,9 @@ network I/O. A lost cache reply leaves that pending publication intact;
 preserves this retry. It never regenerates a key for an uncertain write.
 Only a successful publication replaces the active local key. An old grant
 still awaiting a proof, policy decision or ticket then fails its state check.
+Call `expire()` when the application's wallet expiry scheduler runs: it erases
+expired active/pending keys and durably saves the retained sequence floor.
+An expired uncertain publication can then be replaced with a new sequence.
 
 `publish({text,discriminators,expiresAt})` returns the public cache record.
 `currentPublication()` returns only that record. `close()` stops local serving
@@ -91,6 +94,14 @@ recursive sorting of operation keys and the pinned policy digest. The HTTP
 adapter posts to `/v1/discovery` as `application/json` and bounds response bytes
 before parsing. `lease()` supplies the current device's explicitly managed
 lease, with this client's session ID. Heartbeats do not re-upload ciphertext.
+The required `savePending(requestOrNull)` durably journals signed writes in the
+member wallet; `pendingRequest` restores that journal. It never journals read
+queries. An uncertain publication retries the identical outer request, ID and
+lease while valid. After the outer request expires it signs the same immutable
+publication with a freshly allocated lease sequence. The server treats that
+exact current publication as a quota-neutral repair. Acknowledged publication
+requests remain journaled until the publisher durably saves its active key and
+calls `confirmPublication`. Other writes cannot overtake that pending commit.
 
 ## Anonymous reads and key release
 
@@ -193,9 +204,10 @@ bearer permit to the private wallet. A new request ID is a new quota request.
 `takePermit` atomically reserves a real finalized permit; `savePending` durably
 saves the exact claim before `redeem`; `complete` marks the permit spent and
 removes the pending intent. `retryPending()` preserves an uncertain request.
-Never recycle an uncertain/expired reserved permit into the available pool.
-An expired pending intent can be discarded by the wallet as spent and a new
-acquirer constructed. The redeem payload is exactly
+`retireExpired()` calls the required durable `retire(pending)` callback to mark
+an expired uncertain reservation spent, then clears it so a fresh challenge
+can acquire a new permit. Never recycle an uncertain/expired reserved permit
+into the available pool. The redeem payload is exactly
 `{permit,challengeDigest,expiresAt,claim}`. It contains no member or profile ID.
 
 `createProfileTicketVerifier` verifies the actual Ed25519 redemption stamp

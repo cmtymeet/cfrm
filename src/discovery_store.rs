@@ -103,10 +103,16 @@ pub(crate) fn transition(mut state: MemberControl, request: &VerifiedDiscoveryRe
                 (sequence == state.profile_sequence && hash != state.publication_hash) {
                 return Err(Error::Replay);
             }
-            state.publish.take(now, limits.publish_window_seconds, limits.publish_limit)?;
+            // A fresh authenticated wrapper may repair an evicted slot after
+            // the original request expired. Identical current bytes do not
+            // create a publication or a covert public-field update.
+            let same_publication = sequence == state.profile_sequence && hash == state.publication_hash;
+            if !same_publication {
+                state.publish.take(now, limits.publish_window_seconds, limits.publish_limit)?;
+            }
             let discriminators = digest(&serde_json::to_vec(&value.envelope.discriminators)
                 .map_err(|_| Error::InvalidInput)?);
-            if state.discriminator_hash != discriminators {
+            if !same_publication && state.discriminator_hash != discriminators {
                 state.discriminate.take(now, limits.discriminator_window_seconds, limits.discriminator_limit)?;
             }
             update_lease(&mut state, request, lease, limits, now)?;
@@ -158,6 +164,49 @@ pub(crate) fn summary(publication: &CachedProfile, expires_at: u64) -> Discovery
         discriminators: envelope.discriminators.clone(), expires_at }
 }
 
+/// Reserve enough bytes for a full cursor even on the final page. The cursor
+/// advances only past entries actually returned or nonmatching entries scanned.
+pub(crate) struct QueryPage {
+    entries: Vec<DiscoverySummary>,
+    bytes: usize,
+    maximum: usize,
+    last_scanned: Option<String>,
+}
+
+impl QueryPage {
+    pub(crate) fn new(maximum: usize) -> Result<Self, Error> {
+        let bytes = serde_json::to_vec(&DiscoveryResponse::Page {
+            entries: Vec::new(), next_cursor: Some("A".repeat(43)),
+        }).map_err(|_| Error::Storage)?.len();
+        if bytes > maximum { return Err(Error::Capacity); }
+        Ok(Self { entries: Vec::new(), bytes, maximum, last_scanned: None })
+    }
+
+    pub(crate) fn len(&self) -> usize { self.entries.len() }
+
+    pub(crate) fn consider(&mut self, member: &str, entry: Option<DiscoverySummary>) -> Result<bool, Error> {
+        if let Some(entry) = entry {
+            let length = serde_json::to_vec(&entry).map_err(|_| Error::Storage)?.len();
+            let next = self.bytes.checked_add(length).and_then(|n| n.checked_add(usize::from(!self.entries.is_empty())))
+                .ok_or(Error::Capacity)?;
+            if next > self.maximum {
+                // Do not return a nonadvancing cursor for an impossible first
+                // entry. A configuration error needs a clear terminal failure.
+                if self.entries.is_empty() && self.last_scanned.is_none() { return Err(Error::Capacity); }
+                return Ok(false);
+            }
+            self.bytes = next;
+            self.entries.push(entry);
+        }
+        self.last_scanned = Some(member.to_owned());
+        Ok(true)
+    }
+
+    pub(crate) fn finish(self, more: bool) -> DiscoveryResponse {
+        DiscoveryResponse::Page { entries: self.entries, next_cursor: if more { self.last_scanned } else { None } }
+    }
+}
+
 #[derive(Default)]
 struct Community {
     last_now: u64,
@@ -201,20 +250,18 @@ impl DiscoveryStore for MemoryDiscoveryStore {
         community.controls.insert(request.member_id.clone(), change.control);
         match &request.operation {
             DiscoveryOperation::Query { filters, limit, after } => {
-                let mut entries = Vec::new();
+                let mut page = QueryPage::new(limits.max_response_bytes)?;
                 let mut scanned = 0;
-                let mut last = None;
                 let mut more = false;
                 for (member, (publication, until)) in &community.profiles {
                     if after.as_ref().is_some_and(|cursor| member <= cursor) { continue; }
-                    if scanned >= limits.max_scan || entries.len() >= *limit { more = true; break; }
+                    if scanned >= limits.max_scan || page.len() >= *limit { more = true; break; }
+                    let entry = filters.iter().all(|(key, value)| publication.envelope.discriminators.get(key) == Some(value))
+                        .then(|| summary(publication, *until));
+                    if !page.consider(member, entry)? { more = true; break; }
                     scanned += 1;
-                    last = Some(member.clone());
-                    if filters.iter().all(|(key, value)| publication.envelope.discriminators.get(key) == Some(value)) {
-                        entries.push(summary(publication, *until));
-                    }
                 }
-                Ok(DiscoveryResponse::Page { entries, next_cursor: if more { last } else { None } })
+                Ok(page.finish(more))
             }
             DiscoveryOperation::Fetch { member_id } => Ok(DiscoveryResponse::Profile {
                 publication: community.profiles.get(member_id).map(|(value, _)| value.clone()),

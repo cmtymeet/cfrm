@@ -91,6 +91,38 @@ fn actual_store_publication_is_idempotent_and_reads_do_not_replay() {
 }
 
 #[test]
+fn expired_outer_request_recovers_identical_current_profile_without_quota_or_expiry_reset() {
+    use cfrm::discovery_store::MemoryDiscoveryStore;
+    let f = Fixture::new();
+    let mut l = limits(); l.publish_limit = 1;
+    let service = DiscoveryService::new(f.trust.clone(), l, MemoryDiscoveryStore::new()).unwrap();
+    let original = request(&f);
+    service.execute(&original, 110).unwrap();
+    assert_eq!(service.execute(&original, 131), Err(Error::Expired));
+    let mut repair = original.clone();
+    repair.request_id = encoded(64); repair.issued_at = 131; repair.expires_at = 151;
+    if let DiscoveryOperation::Publish { lease, .. } = &mut repair.operation { lease.sequence = 2; lease.expires_at = 191; }
+    sign_request(&f, &mut repair);
+    service.execute(&repair, 131).unwrap();
+    match service.execute(&fetch(&f, 65, 131), 131).unwrap() {
+        DiscoveryResponse::Profile { publication: Some(p) } => { assert_eq!(p.envelope.sequence, 1); assert_eq!(p.envelope.expires_at, 400); },
+        other => panic!("unexpected {other:?}"),
+    }
+    let mut stale_lease = repair.clone(); stale_lease.request_id = encoded(66); sign_request(&f, &mut stale_lease);
+    assert_eq!(service.execute(&stale_lease, 131), Err(Error::Replay));
+    let mut distinct = repair;
+    distinct.request_id = encoded(67);
+    if let DiscoveryOperation::Publish { lease, publication } = &mut distinct.operation {
+        lease.sequence = 3;
+        publication.envelope.sequence = 2;
+        publication.envelope.profile_epoch = encoded(68);
+        publication.envelope.signature = BASE64URL_NOPAD.encode(&f.device.sign(&envelope_bytes(&publication.envelope)).to_bytes());
+    }
+    sign_request(&f, &mut distinct);
+    assert_eq!(service.execute(&distinct, 131), Err(Error::Capacity));
+}
+
+#[test]
 fn independent_devices_keep_member_visible_until_final_lease_expires() {
     use cfrm::discovery_store::MemoryDiscoveryStore;
     let f = Fixture::new();

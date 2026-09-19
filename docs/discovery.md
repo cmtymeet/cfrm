@@ -121,6 +121,14 @@ the reader creates a fresh request ID. Stored replay markers contain opaque
 digests and expiries, not a read target, filter or response. Counts are per
 member, shared across that member's devices and sessions.
 
+After an outer request expires, the owner may submit a fresh signed request for
+the identical current publication, with a strictly newer device lease sequence.
+This repairs an evicted ciphertext slot without charging another publication or
+discriminator update. The full stored publication hash must match; changed
+bytes, signatures, filters or profile expiry are a different publication and
+remain subject to revision and quota checks. Repair never extends the signed
+profile expiry. Expired profile authority must be renewed through publication.
+
 `MemoryDiscoveryStore` is a reference implementation and a single-process
 embedding. It loses ephemeral state on restart. Production Valkey use requires
 `SqliteDiscoveryControl`: all replicas share the same durable control database.

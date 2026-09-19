@@ -21,11 +21,23 @@ const exact = (value,keys) => value && !Array.isArray(value) && Object.keys(valu
 function identity(grant,authorization) {
   if (!exact(grant,['version','issuerKeyId','communityId','memberId','chatPublicKey','policyDigest','issuedAt','expiresAt','signature'])
       || !exact(authorization,['version','communityId','memberId','rootPublicKey','devicePublicKey','issuedAt','expiresAt','signature'])) throw new Error('Exact public identity required');
+  for(const value of [grant,authorization]) {
+    if(value.version!==1 || typeof value.communityId!=='string' || value.communityId.length>256
+      || !/^[A-Za-z0-9._:/-]+$/.test(value.communityId) || time(value.expiresAt)<=time(value.issuedAt)) throw new Error('Public identity encoding');
+    decode(value.signature,64);
+  }
+  for(const key of ['issuerKeyId','memberId','chatPublicKey','policyDigest'])decode(grant[key],32);
+  for(const key of ['memberId','rootPublicKey','devicePublicKey'])decode(authorization[key],32);
   return {grant:structuredClone(grant),authorization:structuredClone(authorization)};
+}
+function proofScope(value) {
+  if(!exact(value,['circuitDigest','verifyingKeyDigest']))throw new Error('Exact public proof scope required');
+  nonzero(value.circuitDigest);nonzero(value.verifyingKeyDigest);
 }
 
 export async function accountRequestBytes(r) {
   await validateStatement(r.statement);
+  proofScope(r.proofScope);
   if (r.issuedAt !== r.statement.now || time(r.expiresAt) <= time(r.issuedAt)
       || r.expiresAt > r.statement.validUntil || !Array.isArray(r.proof) || !r.proof.length
       || r.proof.length > 1024 * 1024) throw new Error('Account request validity');
@@ -35,7 +47,9 @@ export async function accountRequestBytes(r) {
 }
 
 export async function accountAcceptanceBytes(a) {
+  if(!exact(a,['statement','requestId','requestDigest','proofScope','acceptedAt','signature']))throw new Error('Exact acceptance required');
   await validateStatement(a.statement);
+  proofScope(a.proofScope);
   if (time(a.acceptedAt) < a.statement.now || a.acceptedAt >= a.statement.validUntil) throw new Error('Acceptance time');
   return cat(utf8('cfrm.account.acceptance.v1\0'), nonzero(a.requestId), bytes(a.requestDigest,32),
     bytes(a.proofScope.circuitDigest,32), bytes(a.proofScope.verifyingKeyDigest,32), be(a.acceptedAt,8), await sha(statementBytes(a.statement)));
@@ -64,6 +78,7 @@ export function accountStatusBytes(r) {
     nonzero(r.challenge), decode(r.chatPublicKey,32), be(r.issuedAt,8), be(r.expiresAt,8));
 }
 export async function verifyAccountStatusResponse(response, request, operatorPublicKey) {
+  if(!exact(response,['statusRequestDigest','observedAt','acceptance','signature']))throw new Error('Exact status response required');
   const digest = await sha(cat(accountStatusBytes(request), decode(request.signature,64)));
   if (!equal(digest, bytes(response.statusRequestDigest,32)) || time(response.observedAt) < request.issuedAt
       || response.observedAt >= request.expiresAt) throw new Error('Stale status response');

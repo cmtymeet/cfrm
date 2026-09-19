@@ -77,8 +77,8 @@ export async function createProfileTicketVerifier({ epoch: selected, clock }) {
  * implementation. The redeemer validates the permit before signing a stamp. */
 export async function createProfileTicketAcquirer(options) {
   const { epoch, contextId } = await epochCopy(options.epoch), now = monotonicClock(options.clock);
-  for (const name of ['takePermit', 'savePending', 'redeem', 'complete']) if (typeof options[name] !== 'function') reject();
-  const takePermit = options.takePermit, save = options.savePending, redeem = options.redeem, complete = options.complete;
+  for (const name of ['takePermit', 'savePending', 'redeem', 'complete', 'retire']) if (typeof options[name] !== 'function') reject();
+  const takePermit = options.takePermit, save = options.savePending, redeem = options.redeem, complete = options.complete, retire = options.retire;
   const verify = await createProfileTicketVerifier({ epoch, clock: now });
   let pending = options.pending === undefined ? null : structuredClone(options.pending), busy = false;
   function validPending(value) {
@@ -127,6 +127,17 @@ export async function createProfileTicketAcquirer(options) {
     async retryPending() {
       if (busy || !pending) reject(); busy = true;
       try { return await finish(); } finally { busy = false; }
+    },
+    async retireExpired() {
+      if (busy) reject(); busy = true;
+      try {
+        if (!pending) return;
+        validPending(pending);
+        if (pending.expiresAt > now()) reject();
+        // The redeemer may already have committed. Retirement marks the local
+        // reservation spent, never returns it to the available permit pool.
+        await retire(structuredClone(pending)); pending = null;
+      } finally { busy = false; }
     },
   });
 }

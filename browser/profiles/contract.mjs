@@ -154,6 +154,14 @@ export const profileContractCases = [
     f.failSave(false); await f.publisher.retryPending();
     check((await f.read()).sequence === 1, 'durable retry uses initial sequence');
   }],
+  ['expired uncertain publications erase keys while preserving sequence continuity', async () => {
+    const f = await fixture(); f.failPublish(true);
+    await rejects(() => f.publish(), 'uncertain publication retained');
+    f.advance(NOW + 200); await f.publisher.expire();
+    check(f.checkpoint.pending === null && f.checkpoint.active === null && f.checkpoint.sequence === 1, 'expired keys removed without resetting version');
+    f.failPublish(false); await f.publish({ text: 'After expiry', expiresAt: NOW + 300 });
+    check((await f.read()).sequence === 2, 'new publication continues shared sequence');
+  }],
   ['fresh publication rotates the key and invalidates in-flight old grants', async () => {
     const f = await fixture(); await f.publish(); const before = f.stored;
     let started, release;
@@ -255,7 +263,7 @@ export const profileContractCases = [
   ['discovery client signs exact Rust-compatible requests and carries no DEK', async () => {
     const f = await fixture(); await f.publish(); const requests = [], sessionId = encode(random(32));
     const client = createDiscoveryClient({ ...f.config, identity: f.owner, sessionId, requestSeconds: 10,
-      maxResponseBytes: 16384, lease: async () => ({ leaseId: sessionId, sequence: 1, expiresAt: NOW + 20 }),
+      maxResponseBytes: 16384, savePending: async () => {}, lease: async () => ({ leaseId: sessionId, sequence: 1, expiresAt: NOW + 20 }),
       async send(request) {
         requests.push(request);
         await verifySignature(f.owner.authority.admission.chatPublicKey, request.signature, discoveryRequestBytes(request));
@@ -269,6 +277,26 @@ export const profileContractCases = [
       { kind: 'fetch', memberId: f.target.memberId }];
     check(new TextDecoder().decode(discoveryRequestBytes(value)) === JSON.stringify(expected), 'independent request byte vector');
     check(!JSON.stringify(requests).includes(f.checkpoint.active.secret), 'cache adapter sees no secret');
+  }],
+  ['discovery publication recovery preserves exact signed writes and renews only expired wrappers', async () => {
+    const f = await fixture(); await f.publish(); const sessionId = encode(random(32)), requests = [];
+    let pendingRequest, lost = true, leaseSequence = 0;
+    const options = { ...f.config, identity: f.owner, sessionId, requestSeconds: 10, maxResponseBytes: 16384,
+      savePending: async value => { pendingRequest = structuredClone(value); },
+      lease: async () => ({ leaseId: sessionId, sequence: ++leaseSequence, expiresAt: f.config.clock() + 20 }),
+      async send(request) { requests.push(structuredClone(request)); if (lost) throw new Error('lost acknowledgement'); return { kind: 'updated' }; } };
+    const first = createDiscoveryClient(options);
+    await rejects(() => first.publish(f.stored), 'lost outer request persists');
+    check(pendingRequest.requestId === requests[0].requestId && leaseSequence === 1, 'first envelope saved');
+    const recovered = createDiscoveryClient({ ...options, pendingRequest }); lost = false;
+    await recovered.publish(f.stored);
+    check(JSON.stringify(requests[0]) === JSON.stringify(requests[1]) && leaseSequence === 1, 'exact outer request retry');
+    check(pendingRequest !== null, 'ack retained until owner key checkpoint commits');
+    await rejects(() => recovered.heartbeat(), 'other writes cannot overtake pending publication');
+    f.advance(NOW + 11); await recovered.publish(f.stored);
+    check(requests[2].requestId !== requests[0].requestId && leaseSequence === 2 &&
+      JSON.stringify(requests[2].operation.publication) === JSON.stringify(requests[0].operation.publication), 'late repair only renews auth and lease');
+    await recovered.confirmPublication(f.stored); check(pendingRequest === null, 'durable owner confirmation clears outer journal');
   }],
   ['blind resource-ticket stamp binds the exact anonymous challenge and dedicated epoch', async () => {
     const f = await fixture(), redemption = await keyPair();
@@ -302,11 +330,12 @@ export const profileContractCases = [
       epoch.issueUntil, epoch.expiresAt, epoch.publicKeyDer, epoch.redemptionPublicKey]));
     const permit = { contextId, serial: encode(random(32)), randomizer: encode(random(32)), signature: encode(random(384)) };
     let pending, requests = [], lostReply = true, took = 0;
-    const options = { epoch, clock: f.config.clock, takePermit: async () => { took++; return permit; },
+    const options = { epoch, clock: f.config.clock, takePermit: async () => { took++; return { ...permit, serial: encode(random(32)) }; },
       savePending: async value => { pending = structuredClone(value); }, complete: async () => { pending = null; },
+      retire: async () => { pending = null; },
       async redeem(request) {
         requests.push(structuredClone(request));
-        const stamp = { contextId, tokenId: await digest(json(['cfrm.permit.spend.v1', contextId, permit.serial])),
+        const stamp = { contextId, tokenId: await digest(json(['cfrm.permit.spend.v1', contextId, request.permit.serial])),
           commitment: await profileTicketCommitment(contextId, request.challengeDigest, request.expiresAt), claim: request.claim,
           expiresAt: epoch.expiresAt, signature: '' };
         stamp.signature = await signing(redemption, json(['cfrm.permit.redeemed.v1', contextId, stamp.tokenId, stamp.commitment, stamp.claim, stamp.expiresAt]));
@@ -322,9 +351,17 @@ export const profileContractCases = [
     check(JSON.stringify(requests[0]) === JSON.stringify(requests[1]), 'identical anonymous retry');
     check(pending === null && took === 1 && result.challengeDigest === challengeDigest, 'one reserved ticket committed');
     check(!JSON.stringify(requests).includes(f.target.memberId), 'redemption contains no reader identity');
+    lostReply = true;
+    await rejects(() => restored.acquireTicket({ challengeDigest: encode(random(32)), expiresAt }), 'second uncertain reservation');
+    const expired = await createProfileTicketAcquirer({ ...options, pending });
+    await rejects(() => expired.retireExpired(), 'unexpired reservation cannot be retired');
+    f.advance(expiresAt); await expired.retireExpired();
+    check(pending === null, 'expired reservation durably retired as spent');
+    lostReply = false; await expired.acquireTicket({ challengeDigest: encode(random(32)), expiresAt: NOW + 50 });
+    check(took === 3, 'a new permit can be acquired after expiry recovery');
     const blinded = random(416); blinded.set(decode(contextId, 32));
     const issuance = await signProfileTicketIssue({ ...f.config, identity: f.owner, epoch, blindedRequest: blinded,
-      requestId: encode(random(32)), expiresAt: NOW + 10 });
+      requestId: encode(random(32)), expiresAt: NOW + 40 });
     await verifySignature(f.owner.authority.admission.chatPublicKey, issuance.request.signature, await keyAccessIssueBytes(issuance.request));
     check(!JSON.stringify(issuance).includes(challengeDigest), 'issuance never names a profile-key challenge');
   }],
@@ -343,14 +380,26 @@ export async function profileDiscoveryInteropFixture() {
   const f = await fixture(); const publication = await f.publish(), requests = [];
   const sessionId = encode(random(32));
   const client = createDiscoveryClient({ ...f.config, identity: f.owner, sessionId, requestSeconds: 10,
-    maxResponseBytes: 16384, lease: async () => ({ leaseId: sessionId, sequence: 1, expiresAt: NOW + 20 }),
+    maxResponseBytes: 16384, savePending: async () => {}, lease: async () => ({ leaseId: sessionId, sequence: 1, expiresAt: NOW + 20 }),
     async send(request) {
       requests.push(request);
       return request.operation.kind === 'fetch' ? { kind: 'profile', publication } : { kind: 'updated' };
     } });
   await client.publish(publication); await client.fetch(f.target.memberId);
+  const recoveryRequests = [];
+  let pendingRequest, lost = true, sequence = 0;
+  const recoveryOptions = { ...f.config, identity: f.owner, sessionId: encode(random(32)), requestSeconds: 10,
+    maxResponseBytes: 16384, savePending: async value => { pendingRequest = structuredClone(value); },
+    async lease() { return { leaseId: recoveryOptions.sessionId, sequence: ++sequence, expiresAt: f.config.clock() + 20 }; },
+    async send(request) {
+      recoveryRequests.push(structuredClone(request));
+      if (lost) throw new Error('test lost reply'); return { kind: 'updated' };
+    } };
+  await rejects(() => createDiscoveryClient(recoveryOptions).publish(publication), 'retain lost signed request');
+  const recovered = createDiscoveryClient({ ...recoveryOptions, pendingRequest }); lost = false;
+  await recovered.publish(publication); f.advance(NOW + 11); await recovered.publish(publication);
   return { fixtureOnly: true, now: NOW, trust: f.config.trust, publication, requests,
     profileSigningBytes: encode(profileEnvelopeBytes(publication.envelope)),
     profileAssociatedData: encode(profileAssociatedData(publication.envelope)),
-    requestSigningBytes: requests.map(value => encode(discoveryRequestBytes(value))) };
+    requestSigningBytes: requests.map(value => encode(discoveryRequestBytes(value))), recoveryRequests };
 }

@@ -1,7 +1,8 @@
 //! Durable anti-abuse guards for replaceable ciphertext caches. This database
 //! stores no ciphertext, decryption key, profile text, query or fetched member ID.
 use crate::{admission::{digest, MAX_INTEGER}, discovery::{DiscoveryLimits, DiscoveryOperation,
-    VerifiedDiscoveryRequest}, discovery_store::{transition, MemberControl}, Error};
+    VerifiedDiscoveryRequest}, discovery_store::{transition, MemberControl},
+    allocation::{sql_integer, stored_integer}, Error};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::{path::Path, sync::Mutex, time::Duration};
 
@@ -200,14 +201,14 @@ impl SqliteDiscoveryControl {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| Error::Storage)?;
         let expected_limits = serde_json::to_string(&(&request.trust_digest, limits)).map_err(|_| Error::InvalidInput)?;
-        let scope: Option<(String, u64, u64)> = transaction.query_row(
+        let scope: Option<(String, i64, i64)> = transaction.query_row(
             "SELECT limits,last_now,last_revision FROM cfrm_discovery_scopes WHERE community=?1",
             [&request.community_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         ).optional().map_err(|_| Error::Storage)?;
-        let previous_revision = scope.as_ref().map_or(0, |scope| scope.2);
+        let previous_revision = scope.as_ref().map(|scope| stored_integer(scope.2)).transpose()?.unwrap_or(0);
         if let Some((stored_limits, last_now, _)) = scope {
             if stored_limits != expected_limits { return Err(Error::PolicyMismatch); }
-            if now < last_now { return Err(Error::ClockRollback); }
+            if now < stored_integer(last_now)? { return Err(Error::ClockRollback); }
         }
         // Scope-wide generations survive member-row expiry, avoiding ABA when
         // a delayed cache intent outlives and then meets a recreated row.
@@ -216,21 +217,21 @@ impl SqliteDiscoveryControl {
         transaction.execute(
             "INSERT INTO cfrm_discovery_scopes(community,limits,last_now,last_revision) VALUES(?1,?2,?3,?4)
              ON CONFLICT(community) DO UPDATE SET last_now=excluded.last_now,last_revision=excluded.last_revision",
-            params![request.community_id, expected_limits, now, revision]
+            params![request.community_id, expected_limits, sql_integer(now)?, sql_integer(revision)?]
         ).map_err(|_| Error::Storage)?;
         transaction.execute("DELETE FROM cfrm_discovery_controls WHERE community=?1 AND expires_at<=?2",
-            params![request.community_id, now]).map_err(|_| Error::Storage)?;
-        let previous: Option<(u64, String)> = transaction.query_row(
-            "SELECT revision,state FROM cfrm_discovery_controls WHERE community=?1 AND member=?2",
-            params![request.community_id, request.member_id], |row| Ok((row.get(0)?, row.get(1)?))
+            params![request.community_id, sql_integer(now)?]).map_err(|_| Error::Storage)?;
+        let previous: Option<String> = transaction.query_row(
+            "SELECT state FROM cfrm_discovery_controls WHERE community=?1 AND member=?2",
+            params![request.community_id, request.member_id], |row| row.get(0)
         ).optional().map_err(|_| Error::Storage)?;
         if previous.is_none() {
-            let count: u64 = transaction.query_row("SELECT COUNT(*) FROM cfrm_discovery_controls WHERE community=?1",
+            let count: i64 = transaction.query_row("SELECT COUNT(*) FROM cfrm_discovery_controls WHERE community=?1",
                 [&request.community_id], |row| row.get(0)).map_err(|_| Error::Storage)?;
-            if count >= limits.max_members as u64 { return Err(Error::Capacity); }
+            if stored_integer(count)? >= limits.max_members as u64 { return Err(Error::Capacity); }
         }
         let state = match previous {
-            Some((_, state)) => serde_json::from_str(&state).map_err(|_| Error::Storage)?,
+            Some(state) => serde_json::from_str(&state).map_err(|_| Error::Storage)?,
             None => MemberControl::default(),
         };
         let mut change = transition(state, request, limits, now)?;
@@ -250,7 +251,7 @@ impl SqliteDiscoveryControl {
                VALUES(?1,?2,?3,?4,?5)
              ON CONFLICT(community,member) DO UPDATE SET
                revision=excluded.revision,expires_at=excluded.expires_at,state=excluded.state",
-            params![request.community_id, request.member_id, revision, change.control.retain_until, encoded]
+            params![request.community_id, request.member_id, sql_integer(revision)?, sql_integer(change.control.retain_until)?, encoded]
         ).map_err(|_| Error::Storage)?;
         transaction.commit().map_err(|_| Error::Storage)?;
         Ok(ControlCommit { community_id: request.community_id.clone(), member_id: request.member_id.clone(),
@@ -264,11 +265,11 @@ impl SqliteDiscoveryControl {
         let mut connection = self.connection.lock().map_err(|_| Error::Storage)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| Error::Storage)?;
-        let current: Option<u64> = transaction.query_row(
+        let current: Option<i64> = transaction.query_row(
             "SELECT revision FROM cfrm_discovery_controls WHERE community=?1 AND member=?2",
             params![commit.community_id, commit.member_id], |row| row.get(0)
         ).optional().map_err(|_| Error::Storage)?;
-        if current != Some(commit.revision) { return Err(Error::Replay); }
+        if current.map(stored_integer).transpose()? != Some(commit.revision) { return Err(Error::Replay); }
         let result = apply(&commit.control)?;
         transaction.commit().map_err(|_| Error::Storage)?;
         Ok(result)
@@ -280,13 +281,13 @@ impl SqliteDiscoveryControl {
         now: u64) -> Result<Option<MemberControl>, Error> {
         let mut connection = self.connection.lock().map_err(|_| Error::Storage)?;
         let transaction = connection.transaction().map_err(|_| Error::Storage)?;
-        let last_now: Option<u64> = transaction.query_row(
+        let last_now: Option<i64> = transaction.query_row(
             "SELECT last_now FROM cfrm_discovery_scopes WHERE community=?1", [community_id],
             |row| row.get(0)).optional().map_err(|_| Error::Storage)?;
-        if last_now.is_some_and(|last| now < last) { return Err(Error::ClockRollback); }
+        if last_now.map(stored_integer).transpose()?.is_some_and(|last| now < last) { return Err(Error::ClockRollback); }
         let state: Option<String> = transaction.query_row(
             "SELECT state FROM cfrm_discovery_controls WHERE community=?1 AND member=?2 AND expires_at>?3",
-            params![community_id, member_id, now], |row| row.get(0)
+            params![community_id, member_id, sql_integer(now)?], |row| row.get(0)
         ).optional().map_err(|_| Error::Storage)?;
         state.map(|value| serde_json::from_str(&value).map_err(|_| Error::Storage)).transpose()
     }

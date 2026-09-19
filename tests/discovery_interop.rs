@@ -51,6 +51,16 @@ fn real_webcrypto_publication_and_requests_are_accepted_by_rust() {
     assert_eq!(service.execute(&requests[0], now), Ok(DiscoveryResponse::Updated));
     assert_eq!(service.execute(&requests[1], now), Ok(DiscoveryResponse::Profile { publication: Some(publication.clone()) }));
 
+    let recovery: Vec<DiscoveryRequest> = serde_json::from_value(fixture["recoveryRequests"].clone()).unwrap();
+    assert_eq!(recovery[0], recovery[1], "uncertain cache retry must preserve the full signed request");
+    let mut limited = limits();
+    limited.publish_limit = 1;
+    let recovery_service = DiscoveryService::new(trust.clone(), limited, MemoryDiscoveryStore::new()).unwrap();
+    assert_eq!(recovery_service.execute(&recovery[0], now), Ok(DiscoveryResponse::Updated));
+    assert_eq!(recovery_service.execute(&recovery[1], now), Ok(DiscoveryResponse::Updated));
+    assert_eq!(recovery_service.execute(&recovery[2], now + 11), Ok(DiscoveryResponse::Updated),
+        "fresh wrapper repairs the same publication without another quota debit");
+
     let mut altered = publication.clone();
     altered.envelope.discriminators.insert("ageBand".into(), 7);
     assert!(verify_cached_profile(&altered, &trust, &limits(), now).is_err());

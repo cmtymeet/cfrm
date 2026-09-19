@@ -113,6 +113,21 @@ fn actual_cache_eviction_and_reopen_preserve_quota_and_allow_exact_repair() {
         DiscoveryResponse::Profile { publication: Some(value) } => assert_eq!(value.envelope.sequence, 2),
         other => panic!("unexpected {other:?}"),
     }
+    server.evict_owned_keys("eviction", &member_id(5));
+    // Both publish credits were consumed, and the original signed request has
+    // now expired. Repairing the exact current bytes must still be possible.
+    assert_eq!(service.execute(&second, 131), Err(Error::Expired));
+    let mut repair = second;
+    repair.request_id = encoded(8); repair.issued_at = 131; repair.expires_at = 151;
+    if let DiscoveryOperation::Publish { lease, .. } = &mut repair.operation { lease.sequence = 3; lease.expires_at = 191; }
+    fixtures::sign(&f.device, &mut repair);
+    service.execute(&repair, 131).unwrap();
+    match service.execute(&fixtures::fetch(&f, 9, 131, 5), 131).unwrap() {
+        DiscoveryResponse::Profile { publication: Some(value) } => {
+            assert_eq!(value.envelope.sequence, 2); assert_eq!(value.envelope.expires_at, 400);
+        },
+        other => panic!("unexpected {other:?}"),
+    }
 }
 
 #[test]

@@ -1,5 +1,5 @@
 import { authorityExpiry, decode, encode, exact, fresh, json, monotonicClock, positive,
-  random, reject, signing, trustCopy, verifyAuthority } from './crypto.js';
+  random, reject, signing, trustCopy, verifyAuthority, verifySignature } from './crypto.js';
 import { identityCopy } from './access.js';
 
 function sorted(value) {
@@ -23,23 +23,69 @@ export function createDiscoveryClient(options) {
   const trust = trustCopy(options.trust), identity = identityCopy(options.identity), clock = monotonicClock(options.clock);
   const requestSeconds = positive(options.requestSeconds), maxResponseBytes = positive(options.maxResponseBytes);
   decode(options.sessionId, 32);
-  if (typeof options.send !== 'function' || typeof options.lease !== 'function') reject();
-  const send = options.send, lease = options.lease, sessionId = options.sessionId;
-  async function request(operation) {
+  if (typeof options.send !== 'function' || typeof options.lease !== 'function' || typeof options.savePending !== 'function') reject();
+  const send = options.send, lease = options.lease, save = options.savePending, sessionId = options.sessionId;
+  let pending = options.pendingRequest === undefined ? null : structuredClone(options.pendingRequest), writing = false;
+  async function prepare(operation) {
     const authority = await verifyAuthority(identity.authority, trust, clock());
     const issuedAt = clock(), expiresAt = Math.min(issuedAt + requestSeconds, authorityExpiry(authority));
     const value = { version: 1, ...authority, sessionId, requestId: encode(random(32)), issuedAt, expiresAt,
       operation: structuredClone(operation), signature: '' };
     value.signature = await signing(identity, discoveryRequestBytes(value));
     fresh(value, clock());
+    return value;
+  }
+  async function transmit(value) {
+    fresh(value, clock());
     const response = await send(value);
     if (!response || typeof response !== 'object' || json(response).length > maxResponseBytes) reject();
     return response;
   }
+  async function request(operation) { return transmit(await prepare(operation)); }
+  const same = (left, right) => JSON.stringify(sorted(left)) === JSON.stringify(sorted(right));
+  async function write(kind, build, matches, retain = false) {
+    if (writing) reject(); writing = true;
+    try {
+      if (pending) {
+        const message = discoveryRequestBytes(pending);
+        if (pending.sessionId !== sessionId ||
+            pending.admission.memberId !== identity.authority.admission.memberId ||
+            pending.admission.chatPublicKey !== identity.authority.admission.chatPublicKey ||
+            pending.admission.communityId !== trust.communityId || pending.admission.policyDigest !== trust.policyDigest) reject();
+        await verifySignature(identity.authority.admission.chatPublicKey, pending.signature, message);
+        if (pending.operation.kind === 'publish' && pending.operation.publication.envelope.expiresAt <= clock()) {
+          await save(null); pending = null;
+        }
+      }
+      if (pending) {
+        if (pending.operation.kind !== kind || !matches(pending.operation)) reject();
+        // After request expiry, recovery signs the same publication with a new
+        // lease. The store treats an identical publication as quota-neutral;
+        // this is not authorization to change its sequence, filters or bytes.
+        if (pending.expiresAt <= clock()) pending = await prepare(await build());
+      } else pending = await prepare(await build());
+      await save(structuredClone(pending));
+      const response = await transmit(structuredClone(pending));
+      exact(response, ['kind']); if (response.kind !== 'updated') reject();
+      if (!retain) { await save(null); pending = null; }
+      return response;
+    } finally { writing = false; }
+  }
   return Object.freeze({
     async publish(publication) {
-      const response = await request({ kind: 'publish', publication: structuredClone(publication), lease: await lease() });
-      exact(response, ['kind']); if (response.kind !== 'updated') reject();
+      const snapshot = structuredClone(publication);
+      await write('publish', async () => ({ kind: 'publish', publication: snapshot, lease: await lease() }),
+        operation => same(operation.publication, snapshot), true);
+    },
+    // Called only after the publisher durably commits the matching active DEK.
+    // Until then, another write cannot discard the uncertain outer request.
+    async confirmPublication(publication) {
+      if (writing) reject(); writing = true;
+      try {
+        if (!pending) return;
+        if (pending.operation.kind !== 'publish' || !same(pending.operation.publication, publication)) reject();
+        await save(null); pending = null;
+      } finally { writing = false; }
     },
     async fetch(memberId) {
       decode(memberId, 32);
@@ -54,13 +100,12 @@ export function createDiscoveryClient(options) {
       return response;
     },
     async heartbeat() {
-      const response = await request({ kind: 'heartbeat', lease: await lease() });
-      exact(response, ['kind']); if (response.kind !== 'updated') reject();
+      await write('heartbeat', async () => ({ kind: 'heartbeat', lease: await lease() }), () => true);
     },
     async disconnect(sequence) {
       positive(sequence);
-      const response = await request({ kind: 'disconnect', leaseId: sessionId, sequence });
-      exact(response, ['kind']); if (response.kind !== 'updated') reject();
+      await write('disconnect', async () => ({ kind: 'disconnect', leaseId: sessionId, sequence }),
+        operation => operation.sequence === sequence);
     },
   });
 }

@@ -14,8 +14,9 @@ const policy = {initialCredit:3,maximumAvailable:4,outgoingReservation:1,incomin
 const field = n => [...new Uint8Array(31),n], bytes = n => Array(32).fill(n);
 const scope = {circuitDigest:bytes(41),verifyingKeyDigest:bytes(42)};
 const text = value => new TextEncoder().encode(value);
-const identity={grant:{version:1,issuerKeyId:'test',communityId:'test',memberId:'test',chatPublicKey:'test',policyDigest:'test',issuedAt:100,expiresAt:1000,signature:'test'},
-  authorization:{version:1,communityId:'test',memberId:'test',rootPublicKey:'test',devicePublicKey:'test',issuedAt:100,expiresAt:1000,signature:'test'}};
+const b64=(n,size=32)=>Buffer.alloc(size,n).toString('base64url');
+const identity={grant:{version:1,issuerKeyId:b64(1),communityId:'test',memberId:b64(2),chatPublicKey:b64(3),policyDigest:b64(4),issuedAt:100,expiresAt:1000,signature:b64(5,64)},
+  authorization:{version:1,communityId:'test',memberId:b64(2),rootPublicKey:b64(6),devicePublicKey:b64(3),issuedAt:100,expiresAt:1000,signature:b64(7,64)}};
 async function statement() {
   return {protocolVersion:2,community:bytes(1),owner:bytes(2),policyDigest:Array.from(await policyDigest(Uint8Array.from(bytes(1)),policy)),
     enrollmentRoot:field(3),now:110,validUntil:200,genesis:true,previousVersion:0,nextVersion:0,
@@ -27,7 +28,7 @@ function key() { const pair=generateKeyPairSync('ed25519'); return {...pair,
 test('artifact loading pins manifest and every byte, bounds cumulative bytes and rejects duplicate setup', async () => {
   const files={'circuit.json':text(JSON.stringify({bytecode:'test'})),'vk.bin':new Uint8Array([1]),
     'setup/g1.dat':new Uint8Array(32),'setup/g2.dat':new Uint8Array([2])};
-  const manifest={accountingMode:'account-state-v2',hashScheme:'poseidon2-bn254-fixed-128-v1',numPoints:1,
+  const manifest={version:1,compiler:'1.0.0-beta.26',backend:'5.0.0',verifierTarget:'noir-recursive',accountingMode:'account-state-v2',hashScheme:'poseidon2-bn254-fixed-128-v1',numPoints:1,
     circuitSha256:hex(await sha(files['circuit.json'])),vkSha256:hex(await sha(files['vk.bin'])),setup:[]};
   for(const name of ['g1.dat','g2.dat'])manifest.setup.push({name,bytes:files['setup/'+name].length,sha256:hex(await sha(files['setup/'+name]))});
   const make=async()=>{const manifestBytes=text(JSON.stringify(manifest));return {manifestBytes,manifestSha256:hex(await sha(manifestBytes)),readArtifact:async name=>files[name]};};
@@ -66,4 +67,5 @@ test('signed public request has the Rust transcript; verified response must bind
   await assert.rejects(client.prepareApply({record:{statement:s,proof:'01',proofScope:scope,input:{secret:true}},chatPublicKey:request.chatPublicKey,expiresAt:180}),/Public/);
   await assert.rejects(client.apply({grant:{},authorization:{},request:{...request,input:{secret:true}}}),/Exact/);
   await assert.rejects(client.apply({grant:{...identity.grant,privateOpening:{}},authorization:identity.authorization,request}),/Exact public/);
+  await assert.rejects(client.apply({...identity,request:{...request,proofScope:{...scope,privateOpening:{}}}}),/Exact public proof/);
 });

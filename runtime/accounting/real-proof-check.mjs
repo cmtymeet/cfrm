@@ -9,10 +9,13 @@ const [config,evidencePath]=process.argv.slice(2);
 if (!config || !evidencePath) throw new Error('Trusted configuration and public browser evidence required');
 const evidence=JSON.parse(await readFile(evidencePath,'utf8'));
 assert.equal(evidence.contract?.ok,true);
-const verifier=await createAccountVerifier(await nodeArtifactOptions(config));
+const options=await nodeArtifactOptions(config);
+const verifier=await createAccountVerifier(options);
 let checked=0;
 try {
-  for(const item of evidence.contract.proofs) {
+  assert(evidence.contract.runtimeFactory?.record,'Actual browser runtime factory evidence required');
+  assert.equal(evidence.contract.runtimeFactory.manifestSha256,options.manifestSha256);
+  for(const item of [...evidence.contract.proofs,evidence.contract.runtimeFactory.record]) {
     const record={statement:item.statement,proof:item.proof,proofScope:verifier.scope};
     assert.equal((await verifier.verify(record)).verified,true);checked++;
     const bad=structuredClone(record);bad.proof=(bad.proof.startsWith('00')?'01':'00')+bad.proof.slice(2);
@@ -21,5 +24,6 @@ try {
     await assert.rejects(verifier.verify(scope));
   }
   assert(checked>0);
-  process.stdout.write(JSON.stringify({ok:true,realAccountProofs:checked,corruptionAndScopeRejections:checked*2})+'\n');
+  process.stdout.write(JSON.stringify({ok:true,realAccountProofs:checked,scenarioAccountProofs:evidence.contract.proofs.length,
+    factoryProofs:1,corruptionAndScopeRejections:checked*2})+'\n');
 } finally {await verifier.destroy();}

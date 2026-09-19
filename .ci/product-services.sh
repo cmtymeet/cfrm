@@ -5,6 +5,18 @@ cargo --version
 node --version
 artifact_dir="${ARTIFACT_ROOT:?}/${CI_COMMIT_SHA:?}/product-services"
 mkdir -p "$artifact_dir"
+capture() {
+  local status=$?
+  trap - EXIT
+  set +e
+  test ! -f Cargo.lock || cp Cargo.lock "$artifact_dir/Cargo.lock"
+  cargo fmt --all
+  tar -cf "$artifact_dir/formatted-source.tar" src/*.rs src/accounting_ledger/*.rs tests/*.rs tests/common/*.rs tests/accounting_ledger/*.rs examples/*.rs
+  printf '%s\n' "$status" > "$artifact_dir/validation-status.txt"
+  (cd "$artifact_dir" && find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+  exit "$status"
+}
+trap capture EXIT
 if test "${RESOLVE_DEPENDENCIES:-0}" = 1; then
   cargo generate-lockfile
   date -u +%FT%TZ > "$artifact_dir/dependency-resolution-time.txt"
@@ -41,8 +53,4 @@ PROFILE_BROWSER_EVIDENCE="$artifact_dir/profile-browser.json" timeout --kill-aft
 if timeout 600 npm ci --prefix runtime/accounting --ignore-scripts --no-audit --no-fund; then
   timeout 180 node --test runtime/accounting/test/*.test.mjs 2>&1 | tee "$artifact_dir/accounting-js.log" || result=$?
 else result=$?; fi
-cargo fmt --all
-tar -cf "$artifact_dir/formatted-source.tar" src/*.rs src/accounting_ledger/*.rs tests/*.rs tests/common/*.rs tests/accounting_ledger/*.rs examples/*.rs
-printf '%s\n' "$result" > "$artifact_dir/validation-status.txt"
-(cd "$artifact_dir" && find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
 exit "$result"

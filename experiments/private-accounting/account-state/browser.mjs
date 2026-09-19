@@ -1,4 +1,4 @@
-import { proveAccountCandidate } from '../../../runtime/accounting/runtime.mjs';
+import { proveAccountCandidate, createAccountProver } from '../../../runtime/accounting/runtime.mjs';
 import { Noir } from '@noir-lang/noir_js';
 import { UltraHonkBackend, UltraHonkVerifierBackend } from '@aztec/bb.js';
 import { OPTIONS, hex, unhex, random, sha, canonicalSignature, be, memberBytes } from '../common.mjs';
@@ -15,7 +15,7 @@ const highS = signature => {
 const uint = bytes => BigInt('0x' + hex(bytes));
 const equal = (a, b) => hex(a) === hex(b);
 
-export async function runAccountState({ api, circuit, manifest, verificationKey, post, bytes, metrics, assert, stage }) {
+export async function runAccountState({ api, circuit, manifest, verificationKey, post, bytes, metrics, assert, stage, releaseBackend }) {
   metrics.accountingMode = ACCOUNT_MODE;
   const configuration = await (await fetch('/test-config.json')).json();
   if (!['answer','close'].includes(configuration.accountScenario)) throw new Error('Explicit synthetic scenario required');
@@ -534,6 +534,22 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   });
   // Real proofs form the only exported account chain; openings, map witnesses,
   // signing secrets and contact receipts stay in this browser test process.
+  // Exercise the complete shipped browser factory after releasing the first
+  // backend. Reprove a page-local genesis candidate, without submitting a second
+  // genesis or transmitting its private witness. Keep this separate from the
+  // chronological accepted account chain.
+  await releaseBackend();
+  stage('production-runtime-factory');
+  const manifestBytes=await bytes('/manifest.json'), manifestSha256=hex(await sha(manifestBytes));
+  const runtime=await createAccountProver({manifestBytes,manifestSha256,browserWasmPath:'/barretenberg.wasm',
+    readArtifact:async(name,maximum)=>{const data=await bytes('/'+name);if(data.length>maximum)throw new Error('Factory artifact bound');return data;},
+    limits:{maxProofBytes:20000}});
+  try {
+    const started=performance.now(),record=await runtime.prove(genesis[0]);
+    assert(record.statement.nextVersion===0 && record.proof.length>0,'production browser factory proves the retained private genesis witness');
+    assert((await runtime.verify(record)).verified===true,'production browser factory verifies its generated public proof');
+    metrics.runtimeFactory={record,manifestSha256,elapsedMs:performance.now()-started,privateWitnessExported:false,ledgerSubmitted:false};
+  } finally {await runtime.destroy();}
   metrics.endJsHeapBytes = performance.memory?.usedJSHeapSize ?? null;
   metrics.memoryMeasurement = 'Local JS heap at end; exact peak WASM unknown; harness process samples are separate';
   metrics.manifest = manifest;

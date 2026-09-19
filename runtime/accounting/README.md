@@ -12,6 +12,7 @@ const options = {
   manifestBytes,              // Uint8Array from the released manifest
   manifestSha256,             // independently pinned by the embedding application
   readArtifact,               // async (fixedName, maximumBytes) => Uint8Array
+  browserWasmPath: '/release/barretenberg.wasm', // browser only; see below
   limits: { memoryPages: 32768, maxProofBytes: 20000 },
 };
 const runtime = await createAccountProver(options);
@@ -23,6 +24,14 @@ const record = await runtime.prove(candidate);
 ```
 
 The application verifies enrollment signatures before supplying `verifiedEntries`.
+The browser factory uses the existing WasmWorker backend and requires
+cross-origin isolation/SharedArrayBuffer. Serve the hash-pinned
+`barretenberg-threads.wasm` beside the other immutable release artifacts. The
+pinned backend maps the base `browserWasmPath` to its `-threads.wasm` sibling.
+`readArtifact` must read from that same immutable release location; the factory
+checks the selected Wasm bytes against the pinned manifest before initializing
+the backend. No remote or `data:` fallback is selected. The embedding supplies
+the same-origin asset server and compatible CSP/worker headers.
 There is no synthetic roster or accepted-time list. `record` contains only the
 statement, public proof and proof scope. `candidate.input` and `candidate.next`
 contain private material and stay at the holder endpoint. A runtime permits one

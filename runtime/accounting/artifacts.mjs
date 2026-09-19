@@ -12,13 +12,15 @@ export function resourceLimits(input = {}) {
 
 // manifestSha256 comes from the application release pin, not the download.
 // readArtifact sees only these fixed names. No artifact contains a private witness.
-export async function loadArtifacts({ manifestBytes, manifestSha256, readArtifact, limits = {} }) {
+export async function loadArtifacts({ manifestBytes, manifestSha256, readArtifact, limits = {}, loadBrowserWasm = false }) {
   const bound = resourceLimits(limits);
   if (!(manifestBytes instanceof Uint8Array) || manifestBytes.length > 1024 * 1024
       || !/^[0-9a-f]{64}$/.test(manifestSha256)
       || hex(await sha(manifestBytes)) !== manifestSha256) throw new Error('Manifest pin mismatch');
   const manifest = JSON.parse(new TextDecoder().decode(manifestBytes));
-  if (manifest.accountingMode !== 'account-state-v2' || manifest.hashScheme !== 'poseidon2-bn254-fixed-128-v1'
+  if (manifest.version !== 1 || manifest.compiler !== '1.0.0-beta.26' || manifest.backend !== '5.0.0'
+      || manifest.verifierTarget !== 'noir-recursive'
+      || manifest.accountingMode !== 'account-state-v2' || manifest.hashScheme !== 'poseidon2-bn254-fixed-128-v1'
       || !Number.isSafeInteger(manifest.numPoints) || manifest.numPoints <= 0 || manifest.numPoints > 9 * 131072
       || !Array.isArray(manifest.setup) || manifest.setup.length !== 2) throw new Error('Unsupported account artifacts');
   let total = manifestBytes.length;
@@ -42,6 +44,13 @@ export async function loadArtifacts({ manifestBytes, manifestSha256, readArtifac
     setup[item.name] = await read('setup/' + item.name, item.sha256, item.bytes);
   }
   if (setup['g1.dat'].length !== manifest.numPoints * 32) throw new Error('Setup point count mismatch');
+  if (loadBrowserWasm) {
+    if (!Array.isArray(manifest.wasm) || manifest.wasm.length !== 1
+        || manifest.wasm[0].name !== 'barretenberg-threads.wasm') throw new Error('Pinned browser Wasm required');
+    const wasm=manifest.wasm[0];
+    if (!Number.isSafeInteger(wasm.bytes) || wasm.bytes <= 8) throw new Error('Browser Wasm size');
+    await read(wasm.name,wasm.sha256,wasm.bytes);
+  }
   return { manifest, circuit, verificationKey, setup, limits: bound };
 }
 
@@ -49,7 +58,7 @@ export async function loadArtifacts({ manifestBytes, manifestSha256, readArtifac
 export function artifactFetcher(base, fetchImpl = globalThis.fetch) {
   const root = new URL(base);
   return async (name, maximum) => {
-    if (!['manifest.json','circuit.json','vk.bin','setup/g1.dat','setup/g2.dat'].includes(name)) throw new Error('Artifact name');
+    if (!['manifest.json','circuit.json','vk.bin','setup/g1.dat','setup/g2.dat','barretenberg-threads.wasm'].includes(name)) throw new Error('Artifact name');
     const response = await fetchImpl(new URL(name, root), { redirect: 'error', credentials: 'omit' });
     if (!response.ok || !response.body) throw new Error('Artifact fetch failed');
     const reader = response.body.getReader(), chunks = []; let size = 0;

@@ -39,9 +39,20 @@ export async function proveAccountCandidate({ noir, backend, verifier, verificat
 }
 
 async function runtime(options, proving) {
-  const artifacts = await loadArtifacts(options);
+  const browser=typeof globalThis.window !== 'undefined' || typeof globalThis.WorkerGlobalScope !== 'undefined';
+  let wasmPath;
+  if (browser) {
+    if (globalThis.crossOriginIsolated !== true || typeof globalThis.SharedArrayBuffer !== 'function'
+        || typeof options.browserWasmPath !== 'string') throw new Error('Browser accounting requires isolation and a pinned same-origin Wasm path');
+    const url=new URL(options.browserWasmPath,globalThis.location.href);
+    if (url.origin!==globalThis.location.origin || url.username || url.password || url.search || url.hash
+        || !url.pathname.endsWith('.wasm')) throw new Error('Same-origin browser Wasm path required');
+    wasmPath=url.href;
+  }
+  const artifacts = await loadArtifacts({...options,loadBrowserWasm:browser});
   const { Barretenberg, BackendType, UltraHonkBackend, UltraHonkVerifierBackend } = await import('@aztec/bb.js');
-  const api = await Barretenberg.new({ backend: BackendType.Wasm, threads: 1, skipSrsInit: true,
+  const api = await Barretenberg.new({ backend: browser ? BackendType.WasmWorker : BackendType.Wasm,
+    ...(browser ? {wasmPath} : {}), threads: 1, skipSrsInit: true,
     memory: { initial: 2048, maximum: artifacts.limits.memoryPages } });
   try {
     await api.srsInitSrs({ pointsBuf: artifacts.setup['g1.dat'], numPoints: artifacts.manifest.numPoints,

@@ -2,7 +2,7 @@
 # Isolated CI dependency only. Never installs packages or starts a service.
 set -euo pipefail
 umask 077
-valkey_root="${VALKEY_TEST_ROOT:?Set VALKEY_TEST_ROOT to this run's owned artifact/tools directory}"
+valkey_root="${VALKEY_TEST_ROOT:?Set VALKEY_TEST_ROOT to the owned artifact/tools directory for this run}"
 case "$valkey_root" in /*) ;; *) echo 'VALKEY_TEST_ROOT must be absolute' >&2; exit 2;; esac
 if test "$valkey_root" = / || test -L "$valkey_root" || test -L "$valkey_root/bin"; then
   echo 'Refusing an unsafe Valkey staging directory' >&2

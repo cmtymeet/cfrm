@@ -46,15 +46,7 @@ impl<V: AccountProofVerifier, C: Fn() -> u64> AccountService<V, C> {
 
     pub fn handle_json(&mut self, body: &[u8]) -> Result<Vec<u8>, Error> {
         if body.len() > self.max_request_bytes { return Err(Error::Capacity); }
-        let value: serde_json::Value = serde_json::from_slice(body).map_err(|_| Error::InvalidInput)?;
-        for (name, fields) in [
-            ("grant", &["version", "issuer_key_id", "community_id", "member_id", "chat_public_key", "policy_digest", "issued_at", "expires_at", "signature"][..]),
-            ("authorization", &["version", "communityId", "memberId", "rootPublicKey", "devicePublicKey", "issuedAt", "expiresAt", "signature"][..]),
-        ] {
-            let object = value.get(name).and_then(|v| v.as_object()).ok_or(Error::InvalidInput)?;
-            if object.len() != fields.len() || fields.iter().any(|key| !object.contains_key(*key)) { return Err(Error::InvalidInput); }
-        }
-        let request = serde_json::from_value(value).map_err(|_| Error::InvalidInput)?;
+        let request = serde_json::from_slice(body).map_err(|_| Error::InvalidInput)?;
         serde_json::to_vec(&self.handle(request)?).map_err(|_| Error::InvalidInput)
     }
 

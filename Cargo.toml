@@ -16,7 +16,7 @@ permits = ["dep:blind-rsa-signatures", "dep:getrandom", "dep:zeroize"]
 permit-issuer = ["permits", "sqlite", "dep:openssl"]
 browser = ["permits", "dep:wasm-bindgen", "dep:js-sys", "dep:chacha20poly1305"]
 discovery-api = ["dep:axum", "dep:tokio"]
-discovery-valkey = ["dep:redis", "dep:r2d2"]
+discovery-valkey = ["sqlite", "dep:redis", "dep:r2d2"]
 
 [dependencies]
 data-encoding = "2.9"

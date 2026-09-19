@@ -5,3 +5,5 @@ export { createHolderKeyOffer, holderDelegationBytes } from './keys.js';
 export { profileEligibilityRequest, validateEligibilityPresentation } from './eligibility.js';
 export { admissionBytes, authorizationBytes, wrappingKeyPair, wrappingPublicKey } from './crypto.js';
 export { createDiscoveryClient, discoveryRequestBytes } from './discovery.js';
+export { createProfileTicketAcquirer, createProfileTicketVerifier, profileTicketCommitment,
+  keyAccessIssueBytes, signProfileTicketIssue } from './tickets.js';

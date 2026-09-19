@@ -117,6 +117,7 @@ pub struct DiscoveryLimits {
 /// trusted implementation boundary, not an independently exposed HTTP endpoint.
 #[derive(Clone, Debug)]
 pub struct VerifiedDiscoveryRequest {
+    pub(crate) trust_digest: String,
     pub(crate) community_id: String,
     pub(crate) member_id: String,
     pub(crate) chat_public_key: String,
@@ -346,6 +347,10 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
             DiscoveryOperation::Fetch { member_id } => { admission::decode::<32>(member_id)?; }
         }
         let verified = VerifiedDiscoveryRequest {
+            trust_digest: admission::digest(&serde_json::to_vec(&serde_json::json!([
+                "cfrm.discovery-trust.v1", self.trust.community_id, self.trust.policy_digest,
+                BASE64URL_NOPAD.encode(&self.trust.issuer_public_key)
+            ])).map_err(|_| Error::InvalidInput)?),
             community_id: request.admission.community_id.clone(), member_id: request.admission.member_id.clone(),
             chat_public_key: request.admission.chat_public_key.clone(), session_id: request.session_id.clone(),
             request_id: request.request_id.clone(), issued_at: request.issued_at, expires_at: request.expires_at,

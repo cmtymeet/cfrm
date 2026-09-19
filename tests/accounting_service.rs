@@ -108,6 +108,10 @@ fn member_wire_cannot_supply_time_or_admin_operations() {
         assert_eq!(service.handle_json(&serde_json::to_vec(&body).unwrap()), Err(Error::InvalidInput));
     }
     assert_eq!(service.handle_json(&vec![0;100_001]), Err(Error::Capacity));
+    let good=serde_json::json!({"action":"apply","grant":f.grant(7,&f.device),"authorization":f.authorize(7,&f.device),"request":genesis(&f)});
+    assert!(good["grant"].get("issuerKeyId").is_some());
+    let response=service.handle_json(&serde_json::to_vec(&good).unwrap()).unwrap();
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&response).unwrap()["action"],"apply");
 }
 
 #[test]
@@ -136,6 +140,29 @@ fn invalid_authority_cannot_register_an_account() {
     let bad=AccountServiceRequest::Apply { grant:f.grant(8,&f.device), authorization:f.authorize(8,&f.device),request:genesis(&f) };
     assert!(matches!(service.handle(bad),Err(Error::Admission)));
     service.handle(AccountServiceRequest::Apply {grant:f.grant(7,&f.device),authorization:f.authorize(7,&f.device),request:genesis(&f)}).unwrap();
+}
+
+#[test]
+fn actual_js_client_request_is_accepted_by_rust_and_js_checks_the_signed_rust_reply() {
+    use std::{io::Write,process::{Command,Stdio}};
+    fn javascript(mode:&str,input:serde_json::Value)->Vec<u8> {
+        let script=Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime/accounting/test/rust-client-interop.mjs");
+        let mut child=Command::new("node").arg(script).arg(mode).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(&serde_json::to_vec(&input).unwrap()).unwrap();
+        let output=child.wait_with_output().unwrap();assert!(output.status.success());output.stdout
+    }
+    let dir=tempfile::tempdir().unwrap();let f=Fixture::new();let request=genesis(&f);
+    let operator=SigningKey::from_bytes(&[9;32]).verifying_key().to_bytes();
+    let body=javascript("prepare",serde_json::json!({"operatorPublicKey":operator,"grant":f.grant(7,&f.device),
+        "authorization":f.authorize(7,&f.device),"prepare":{"record":{"statement":request.statement,
+        "proof":data_encoding::HEXLOWER.encode(&request.proof),"proofScope":request.proof_scope},
+        "chatPublicKey":request.chat_public_key,"expiresAt":request.expires_at,"requestId":request.request_id}}));
+    let mut service=AccountService::new(open(&dir.path().join("accounts"),&f,StorageOnlyVerifier),||110,100_000).unwrap();
+    service.publish_verified_checkpoint(0,fr(8)).unwrap();
+    let response:serde_json::Value=serde_json::from_slice(&service.handle_json(&body).unwrap()).unwrap();
+    let envelope:serde_json::Value=serde_json::from_slice(&body).unwrap();
+    let verified=javascript("verify",serde_json::json!({"acceptance":response["value"],"request":envelope["request"],"operatorPublicKey":operator}));
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&verified).unwrap()["ok"],true);
 }
 
 #[test]

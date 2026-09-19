@@ -14,7 +14,7 @@ const policy = {initialCredit:3,maximumAvailable:4,outgoingReservation:1,incomin
 const field = n => [...new Uint8Array(31),n], bytes = n => Array(32).fill(n);
 const scope = {circuitDigest:bytes(41),verifyingKeyDigest:bytes(42)};
 const text = value => new TextEncoder().encode(value);
-const identity={grant:{version:1,issuer_key_id:'test',community_id:'test',member_id:'test',chat_public_key:'test',policy_digest:'test',issued_at:100,expires_at:1000,signature:'test'},
+const identity={grant:{version:1,issuerKeyId:'test',communityId:'test',memberId:'test',chatPublicKey:'test',policyDigest:'test',issuedAt:100,expiresAt:1000,signature:'test'},
   authorization:{version:1,communityId:'test',memberId:'test',rootPublicKey:'test',devicePublicKey:'test',issuedAt:100,expiresAt:1000,signature:'test'}};
 async function statement() {
   return {protocolVersion:2,community:bytes(1),owner:bytes(2),policyDigest:Array.from(await policyDigest(Uint8Array.from(bytes(1)),policy)),

@@ -19,7 +19,7 @@ const time = n => { if (!Number.isSafeInteger(n) || n <= 0) throw new Error('Tim
 const nonzero = value => { const data = bytes(value,32); if (!data.some(Boolean)) throw new Error('Zero identifier'); return data; };
 const exact = (value,keys) => value && !Array.isArray(value) && Object.keys(value).length === keys.length && keys.every(k=>Object.hasOwn(value,k));
 function identity(grant,authorization) {
-  if (!exact(grant,['version','issuer_key_id','community_id','member_id','chat_public_key','policy_digest','issued_at','expires_at','signature'])
+  if (!exact(grant,['version','issuerKeyId','communityId','memberId','chatPublicKey','policyDigest','issuedAt','expiresAt','signature'])
       || !exact(authorization,['version','communityId','memberId','rootPublicKey','devicePublicKey','issuedAt','expiresAt','signature'])) throw new Error('Exact public identity required');
   return {grant:structuredClone(grant),authorization:structuredClone(authorization)};
 }

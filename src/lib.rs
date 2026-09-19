@@ -13,6 +13,8 @@ pub mod allocation;
 pub mod board;
 pub mod discovery;
 pub mod discovery_store;
+#[cfg(feature = "sqlite")]
+pub mod discovery_control;
 #[cfg(all(feature = "discovery-api", not(target_arch = "wasm32")))]
 pub mod discovery_api;
 #[cfg(all(feature = "discovery-valkey", not(target_arch = "wasm32")))]
@@ -23,6 +25,8 @@ pub mod browser;
 pub mod permit_issuer;
 #[cfg(feature = "permits")]
 pub mod permits;
+#[cfg(feature = "permits")]
+pub mod key_access;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {

@@ -39,8 +39,8 @@ successor private state before calling `apply`.** Only install the successor
 after the verified acceptance is durable. Retry the exact signed request after a
 lost reply. `prepareStatus` and `status` recover the latest acceptance or an exact
 request with a fresh signed challenge. They do not recover lost private openings.
-Transport receives no prover candidate. Grant fields retain the existing
-snake_case cvld wire format; device authorizations use existing camelCase.
+Transport receives no prover candidate. Grants and device authorizations retain
+their existing camelCase wire formats.
 
 The Rust `AccountService` exposes only authenticated `apply` and `status` on its
 member JSON boundary. It owns the trusted clock and refreshes durable policy

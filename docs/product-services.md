@@ -76,3 +76,14 @@ shipped Node verifier against the pinned artifact bundle. Cryptographic browser
 proofs, storage tests using synthetic verifier verdicts, and deployment validation
 are separate evidence scopes. This page describes the validation machinery;
 individual CI receipts establish which source revision has passed.
+
+At `ef5c675d7ab2c1ca71dcdfa2cd071391168fc1f2`, Crow9/67 passed 101 native
+tests, browser-feature Wasm checking, 75 JavaScript tests, 20 actual Chromium
+profile contract groups and five accounting-runtime tests. It used Rust1.97.1,
+Node24.19.0, Chromium152.0.7977.64 and an isolated Valkey9.1.2 process. The native
+checks include TLS trust/hostname rejection, cache eviction and durable recovery,
+concurrent updates, actual blind tickets and cross-runtime signature validation.
+The profile browser contract uses explicitly synthetic eligibility and private
+transport adapters; it does not establish cvld proof or live Tor integration.
+Artifact manifest SHA256:
+`c879a070152934b839825fe6c6cca0f13d86f526e29b9c7cd17302b0c70b764a`.

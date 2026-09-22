@@ -32,7 +32,7 @@ async function fixture() {
   }
   const enrollment = await checkpointFromVerified(community, entries, hashes);
   const genesis = await AccountWitness.genesis({ hashes, community, policy, checkpoint: enrollment, ownerIndex: 0, ownerSecret, now: 110 });
-  return { hashes, community, ownerSecret, enrollment, genesis };
+  return { hashes, community, ownerSecret, enrollment, genesis, entries };
 }
 function restoreOptions(f, candidate) {
   return { hashes: f.hashes, enrollment: f.enrollment, ownerSecret: f.ownerSecret, expectedStatement: candidate.statement,
@@ -125,7 +125,6 @@ test('restoration binds owner, secret, enrollment, policy, version, time and com
     value => { value.ownerSecret[0] ^= 1; },
     value => { value.enrollment.root ^= 1n; },
     value => { value.enrollment.entries[0].path[0] ^= 1n; },
-    value => { value.enrollment.entries[1].key[0] ^= 1; },
   ]) {
     const changed = { ...structuredClone({ ...options, hashes: undefined }), hashes: f.hashes };
     change(changed); await assert.rejects(AccountWitness.restoreCheckpoint(changed));
@@ -144,6 +143,8 @@ test('validly encoded but altered openings, map payloads and historical slots ca
     value => { value.slots[0][1].nonce = '01'.repeat(32); },
     value => { value.slots[0][1].peerAuthority = '1'; },
     value => { value.slots[0][1].ownerAuthority = '1'; },
+    value => { value.slots[0][1].peerEnrollment.key = '01'.repeat(64); },
+    value => { value.slots[0][1].ownerEnrollment.end = '9000'; },
     value => { value.slots[0][1].amount = '2'; },
     value => { value.slots[0][1].phase = 3; },
     value => { value.slots.pop(); },
@@ -151,6 +152,84 @@ test('validly encoded but altered openings, map payloads and historical slots ca
     const changed = decode(options.checkpointBytes); change(changed);
     await assert.rejects(AccountWitness.restoreCheckpoint({ ...options, checkpointBytes: encode(changed) }));
   }
+});
+
+async function refreshedEnrollment(f) {
+  const owner = { ...f.entries[0], accountKey: '44'.repeat(64), issuedAt: 200, delegationDigest: '45'.repeat(32) };
+  const joined = { memberId: Buffer.from(bytes(80)).toString('base64url'), accountKey: '46'.repeat(64),
+    secretHash: hex(await f.hashes.secretHash(f.community, bytes(81))), issuedAt: 200, expiresAt: 10000, delegationDigest: '47'.repeat(32) };
+  // Reorder current members, renew the owner, remove the original outgoing peer,
+  // and admit a new peer. Historical slots retain their original authority.
+  return checkpointFromVerified(f.community, [f.entries[2], owner, joined], f.hashes);
+}
+
+test('refresh changes the current roster without resetting state or requiring removed historical peers', async () => {
+  const f = await fixture(), { candidate, outgoing } = await occupied(f), enrollment = await refreshedEnrollment(f);
+  const refreshed = await candidate.next.withEnrollment({ enrollment, expectedRoot: fieldBytes(enrollment.root) });
+  assert.equal(refreshed.ownerIndex, 1);
+  assert.equal(refreshed.commitment, candidate.next.commitment);
+  assert.equal(refreshed.version, candidate.next.version);
+  assert.deepEqual(refreshed.opening, candidate.next.opening);
+  assert.deepEqual(refreshed.slots, candidate.next.slots);
+  assert.notEqual(refreshed.owner.leaf, candidate.next.owner.leaf);
+  assert.equal(refreshed.slots.get(outgoing.event.toString()).ownerAuthority, candidate.next.owner.leaf);
+  assert.equal(candidate.next.checkpoint.root, f.enrollment.root);
+  const options = { ...restoreOptions(f, candidate), enrollment, checkpointBytes: refreshed.exportCheckpoint(limits),
+    expectedEnrollmentRoot: fieldBytes(enrollment.root) };
+  const restored = await AccountWitness.restoreCheckpoint(options);
+  assert.equal(restored.commitment, candidate.next.commitment);
+  const directlyRestored = await AccountWitness.restoreCheckpoint({ ...options, checkpointBytes: candidate.next.exportCheckpoint(limits) });
+  assert.equal(directlyRestored.commitment, candidate.next.commitment);
+  assert.equal(directlyRestored.checkpoint.root, enrollment.root);
+  assert.deepEqual(directlyRestored.slots, candidate.next.slots);
+  await assert.rejects(AccountWitness.restoreCheckpoint({ ...options, expectedEnrollmentRoot: undefined }));
+  const expired = await restored.expire(outgoing.event, 700);
+  assert.equal(expired.next.opening.reserved, 0n);
+  assert.deepEqual(expired.statement.enrollmentRoot, Array.from(fieldBytes(enrollment.root)));
+  assert.equal((await AccountWitness.restoreCheckpoint({ ...options, checkpointBytes: expired.next.exportCheckpoint(limits),
+    expectedStatement: expired.statement })).commitment, expired.next.commitment);
+  const admitted = await refreshed.reserve({ peerIndex: 2, role: 0, nonce: bytes(82), group: bytes(83), contactPolicy: bytes(84), now: 300 });
+  const slot = admitted.next.slots.get(admitted.event.toString());
+  assert.deepEqual(slot.peer, bytes(80));
+  assert.equal(slot.ownerAuthority, refreshed.owner.leaf);
+  assert.equal(slot.peerAuthority, enrollment.entries[2].leaf);
+  assert.deepEqual(admitted.statement.previousState, candidate.statement.nextState);
+});
+
+test('renewed owners retain original incoming Close and Answer authority after the peer leaves', async () => {
+  const f = await fixture();
+  const reserved = await f.genesis.next.reserve({ peerIndex: 1, role: 1, nonce: bytes(50), group: bytes(51), contactPolicy: bytes(52),
+    openedAt: 110, expiresAt: 600, now: 111 });
+  const active = await reserved.next.activate(reserved.event, 112), enrollment = await refreshedEnrollment(f);
+  const refreshed = await active.next.withEnrollment({ enrollment, expectedRoot: fieldBytes(enrollment.root) });
+  const resolution = { kind: 2, issuedAt: 113n, historyDigest: bytes(71), ed25519ReceiptDigest: bytes(72), signature: new Uint8Array(64) };
+  const closed = await refreshed.settle(reserved.event, resolution, undefined, 300);
+  assert.deepEqual(closed.input.owner_enrollment.key, enrollment.entries[1].key);
+  assert.deepEqual(closed.input.receipt_owner_enrollment.key, f.enrollment.entries[0].key);
+  assert.deepEqual(closed.input.peer_enrollment.key, f.enrollment.entries[1].key);
+  assert.equal(closed.next.opening.reserved, 0n);
+  // Signature validity remains the actual circuit's responsibility. Here the
+  // storage contract verifies which exact original authority reaches that gate.
+  const answered = await refreshed.settle(reserved.event, { ...resolution, kind: 1 }, { issuedAt: 114n, signature: new Uint8Array(64) }, 300);
+  assert.deepEqual(answered.input.receipt_owner_enrollment, closed.input.receipt_owner_enrollment);
+  assert.deepEqual(answered.input.peer_enrollment, closed.input.peer_enrollment);
+  const altered = structuredClone(f.enrollment.entries[1]); altered.end = 9000n;
+  await assert.rejects(refreshed.settle(reserved.event, { ...resolution, kind: 1 }, undefined, 300, altered));
+  const currentOwner = await refreshed.settle(reserved.event, resolution, undefined, 300, undefined, enrollment.entries[1]);
+  assert.deepEqual(currentOwner.input.receipt_owner_enrollment.key, enrollment.entries[1].key);
+});
+
+test('refresh rejects a different root, missing owner, changed owner secret and forged owner path', async () => {
+  const f = await fixture(), enrollment = await refreshedEnrollment(f);
+  await assert.rejects(f.genesis.next.withEnrollment({ enrollment, expectedRoot: fieldBytes(f.enrollment.root) }));
+  const noOwner = await checkpointFromVerified(f.community, [f.entries[1]], f.hashes);
+  await assert.rejects(f.genesis.next.withEnrollment({ enrollment: noOwner, expectedRoot: fieldBytes(noOwner.root) }));
+  const changed = await checkpointFromVerified(f.community, [{ ...f.entries[0], secretHash: hex(await f.hashes.secretHash(f.community, bytes(90))) }], f.hashes);
+  await assert.rejects(f.genesis.next.withEnrollment({ enrollment: changed, expectedRoot: fieldBytes(changed.root) }));
+  const forged = structuredClone(enrollment); forged.entries[1].path[0] ^= 1n;
+  await assert.rejects(f.genesis.next.withEnrollment({ enrollment: forged, expectedRoot: fieldBytes(enrollment.root) }));
+  const repeated = structuredClone(enrollment); repeated.entries[2].member = repeated.entries[0].member;
+  await assert.rejects(f.genesis.next.withEnrollment({ enrollment: repeated, expectedRoot: fieldBytes(enrollment.root) }));
 });
 
 test('asynchronous hash callbacks cannot mutate caller-owned recovery inputs after snapshotting', async () => {

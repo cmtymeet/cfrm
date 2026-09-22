@@ -67,12 +67,17 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   const mutate = async (candidate, label, change) => { const input = structuredClone(candidate.input); await change(input); await rejected(input, label); };
   // Constraint-only counterexamples below use explicit synthetic checkpoints;
   // they never enter the native enrollment verifier, operator or proof report.
-  async function constraintCheckpoint(changedIndex, changes) {
+  async function constraintCheckpoint(changedIndex, changes, retainedIndices) {
     const entries = checkpoint.entries.map(entry => ({ ...entry }));
     Object.assign(entries[changedIndex], changes);
+    const retained = entries.filter((_, index) => retainedIndices === undefined || retainedIndices.includes(index));
     const tree = await SparseTree.create(hashes.enrollmentNode);
-    for (const entry of entries) await tree.set(entry.index, await hashes.enrollment(community, entry.member, entry));
-    return { root: tree.root, entries: entries.map(entry => ({ ...entry, path: tree.path(entry.index) })) };
+    for (let index = 0; index < retained.length; index++) {
+      const entry = retained[index]; entry.index = BigInt(index);
+      entry.leaf = await hashes.enrollment(community, entry.member, entry);
+      await tree.set(entry.index, entry.leaf);
+    }
+    return { root: tree.root, entries: retained.map(entry => ({ ...entry, path: tree.path(entry.index) })) };
   }
   const enrollmentInput = e => ({ key: e.key, secret_hash: e.secretHash, start: e.start, end: e.end,
     delegation_digest: e.delegationDigest, path: e.path, index: e.index });
@@ -187,6 +192,7 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   await mutate(outgoing, 'insertion rejects zero-key sentinel reuse', input => { input.own_map.leaf[0] = 1n; });
   await mutate(outgoing, 'enrollment rejects a noncanonical secret encoding', input => { input.owner_enrollment.secret_hash = be(FR_MODULUS, 32); });
   sender = await prove(outgoing, 0, 'proved outgoing reservation');
+  sender = await sender.withEnrollment({ enrollment: checkpoint, expectedRoot: fieldBytes(checkpoint.root) });
   const checkpointLimits = { maxBytes: 65536, maxMapEntries: 64, maxSlots: 32 };
   const walletCheckpoint = sender.exportCheckpoint(checkpointLimits);
   sender = await AccountWitness.restoreCheckpoint({ checkpointBytes: walletCheckpoint, hashes: accountHashes(api),
@@ -333,14 +339,16 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   {
     const renewedKey = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign','verify']);
     const raw = new Uint8Array(await crypto.subtle.exportKey('raw', renewedKey.publicKey)).slice(1);
-    const synthetic = await constraintCheckpoint(1, { key: raw, start: 200n, delegationDigest: random() });
-    const historicalSelf = structuredClone(settledRecipient.input);
-    historicalSelf.now = 300n; historicalSelf.valid_until = validityHorizon(300, policy);
-    historicalSelf.enrollment_root = fieldBytes(synthetic.root);
-    historicalSelf.owner_enrollment = enrollmentInput(synthetic.entries[1]);
-    await noir.execute(noirInput(historicalSelf));
-    assert(true, 'ACVM-only synthetic renewal retains real original self receipt and exact nested ACK authority');
-    metrics.historicalSelfRenewal = 'constraint-only synthetic current checkpoint; real old receipt; no native renewal interoperability claim';
+    const renewal = { key: raw, start: 200n, delegationDigest: random() };
+    for (const retained of [undefined, [1]]) {
+      const synthetic = await constraintCheckpoint(1, renewal, retained);
+      const renewed = await recipient.withEnrollment({ enrollment: synthetic, expectedRoot: fieldBytes(synthetic.root) });
+      const historicalSelf = await renewed.settle(incoming.event, resolution, acknowledgment, 300);
+      await noir.execute(noirInput(historicalSelf.input));
+      assert(true, retained ? 'ACVM-only renewed owner settles using original receipt/ACK after the peer leaves the current roster'
+        : 'ACVM-only supported enrollment refresh retains real original self receipt and exact nested ACK authority');
+    }
+    metrics.historicalSelfRenewal = 'constraint-only supported context refresh, including removed peer; real old receipt; no native renewal interoperability claim';
   }
   assert(settledRecipient.next.opening.available === recipient.opening.available + BigInt(policy.incomingReservation)
     && settledRecipient.next.opening.reserved === recipient.opening.reserved - BigInt(policy.incomingReservation),

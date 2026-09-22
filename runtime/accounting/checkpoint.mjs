@@ -3,10 +3,12 @@
 import { hex, unhex } from './encoding.mjs';
 import { fieldBytes, fieldValue } from './primitives.mjs';
 import { IndexedMap, SparseTree, integer, policyDigest, statePolicyDigest, SAFE } from './hashes.mjs';
+import { checkEnrollmentShape, copyEnrollmentCheckpoint, enrollmentRoot, verifyEnrollmentLeaf, verifyEnrollmentPath } from './enrollment.mjs';
 
 const TOP = ['version','community','owner','policyDigest','enrollmentRoot','now','accountVersion','commitment','opening','maps','slots'];
 const OPENING = ['available','reserved','frontier','createdAt','admissionEpoch','admissions','blind'];
-const SLOT = ['peer','nonce','group','contactPolicy','role','phase','amount','admittedAt','expiresAt','peerAuthority','ownerAuthority'];
+const SLOT = ['peer','nonce','group','contactPolicy','role','phase','amount','admittedAt','expiresAt','peerAuthority','ownerAuthority','peerEnrollment','ownerEnrollment'];
+const ENROLLMENT = ['member','key','secretHash','start','end','delegationDigest','index','leaf','path'];
 const MAPS = ['outgoing','incoming','pairs'];
 const CEILINGS = { maxBytes: 16 * 1024 * 1024, maxMapEntries: 65536, maxSlots: 65535 };
 const fail = () => { throw new Error('Invalid account checkpoint'); };
@@ -25,8 +27,8 @@ function bytes(value, length = 32) {
   if (!(value instanceof Uint8Array) || value.length !== length) fail();
   return hex(value);
 }
-function readBytes(value) {
-  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) fail();
+function readBytes(value, length = 32) {
+  if (typeof value !== 'string' || value.length !== length * 2 || !/^[0-9a-f]+$/.test(value)) fail();
   return unhex(value);
 }
 function decimal(value, bits) {
@@ -51,7 +53,22 @@ function wireSlot(value) {
   return { peer: bytes(value.peer), nonce: bytes(value.nonce), group: bytes(value.group), contactPolicy: bytes(value.contactPolicy),
     role: value.role, phase: value.phase, amount: writeDecimal(value.amount, 32),
     admittedAt: writeDecimal(value.admittedAt, 64), expiresAt: writeDecimal(value.expiresAt, 64),
-    peerAuthority: writeDecimal(value.peerAuthority), ownerAuthority: writeDecimal(value.ownerAuthority) };
+    peerAuthority: writeDecimal(value.peerAuthority), ownerAuthority: writeDecimal(value.ownerAuthority),
+    peerEnrollment: wireEnrollment(value.peerEnrollment), ownerEnrollment: wireEnrollment(value.ownerEnrollment) };
+}
+function wireEnrollment(value) {
+  checkEnrollmentShape(value);
+  return { member: bytes(value.member), key: bytes(value.key, 64), secretHash: bytes(value.secretHash),
+    start: writeDecimal(value.start, 64), end: writeDecimal(value.end, 64), delegationDigest: bytes(value.delegationDigest),
+    index: writeDecimal(value.index, 32), leaf: writeDecimal(value.leaf), path: value.path.map(n => writeDecimal(n)) };
+}
+function readEnrollment(value) {
+  exact(value, ENROLLMENT);
+  if (!Array.isArray(value.path) || value.path.length !== 32) fail();
+  const entry = { member: readBytes(value.member), key: readBytes(value.key, 64), secretHash: readBytes(value.secretHash),
+    start: readTime(value.start), end: readTime(value.end), delegationDigest: readBytes(value.delegationDigest),
+    index: decimal(value.index, 32), leaf: decimal(value.leaf), path: value.path.map(n => decimal(n)) };
+  checkEnrollmentShape(entry); return entry;
 }
 function wireMap(value, limit) {
   if (!(value.leaves instanceof Map) || value.leaves.size < 1 || value.leaves.size > limit
@@ -110,9 +127,8 @@ export async function restoreWitnessCheckpoint(options, validateStatement) {
   // nor concurrent wallet activity can change bytes after validation.
   const snapshot = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(options.checkpointBytes)));
   const statement = structuredClone(options.expectedStatement), ownerSecret = new Uint8Array(readBytes(bytes(options.ownerSecret)));
-  const provided = options.enrollment;
-  if (!provided || !Array.isArray(provided.entries) || provided.entries.length < 1 || provided.entries.length > 65536) fail();
-  const checkpoint = structuredClone(provided), hashes = options.hashes;
+  const checkpoint = copyEnrollmentCheckpoint(options.enrollment), hashes = options.hashes,
+    expectedRoot = enrollmentRoot(options.expectedEnrollmentRoot ?? statement.enrollmentRoot);
   exact(snapshot, TOP); exact(snapshot.opening, OPENING); exact(snapshot.maps, MAPS);
   if (snapshot.version !== 1 || !Array.isArray(snapshot.slots) || snapshot.slots.length > bound.maxSlots) fail();
   const community = readBytes(snapshot.community), ownerId = bytes(readBytes(snapshot.owner)),
@@ -129,17 +145,18 @@ export async function restoreWitnessCheckpoint(options, validateStatement) {
     entries.set(member, index);
   }
   const ownerIndex = entries.get(ownerId), owner = checkpoint.entries[ownerIndex];
-  if (!owner || checkpoint.root !== root) fail();
+  if (!owner || checkpoint.root !== expectedRoot) fail();
   const slots = new Map();
   for (const item of snapshot.slots) {
     if (!Array.isArray(item) || item.length !== 2) fail();
     const event = decimal(item[0]), s = item[1]; exact(s, SLOT);
-    const peer = readBytes(s.peer), peerIndex = entries.get(bytes(peer));
-    if (event === 0n || slots.has(item[0]) || peerIndex === undefined || ![0, 1].includes(s.role)
+    const peer = readBytes(s.peer);
+    if (event === 0n || slots.has(item[0]) || ![0, 1].includes(s.role)
         || ![1, 2, 3, 4, 5].includes(s.phase) || (s.role === 1 && s.phase === 5)) fail();
-    const slot = { peerIndex, peer, nonce: readBytes(s.nonce), group: readBytes(s.group), contactPolicy: readBytes(s.contactPolicy),
+    const slot = { peer, nonce: readBytes(s.nonce), group: readBytes(s.group), contactPolicy: readBytes(s.contactPolicy),
       role: s.role, phase: s.phase, amount: decimal(s.amount, 32), admittedAt: readTime(s.admittedAt), expiresAt: readTime(s.expiresAt),
-      peerAuthority: decimal(s.peerAuthority), ownerAuthority: decimal(s.ownerAuthority) };
+      peerAuthority: decimal(s.peerAuthority), ownerAuthority: decimal(s.ownerAuthority),
+      peerEnrollment: readEnrollment(s.peerEnrollment), ownerEnrollment: readEnrollment(s.ownerEnrollment) };
     if (slot.admittedAt === 0n || slot.expiresAt <= slot.admittedAt || slot.admittedAt > now) fail();
     slots.set(item[0], slot);
   }
@@ -147,28 +164,20 @@ export async function restoreWitnessCheckpoint(options, validateStatement) {
   await validateStatement(statement);
   if (hex(Uint8Array.from(statement.community)) !== snapshot.community || hex(Uint8Array.from(statement.owner)) !== ownerId
       || hex(Uint8Array.from(statement.policyDigest)) !== snapshot.policyDigest
-      || fieldValue(Uint8Array.from(statement.enrollmentRoot)) !== root || fieldValue(Uint8Array.from(statement.nextState)) !== commitment
+      || (root !== expectedRoot && root !== fieldValue(Uint8Array.from(statement.enrollmentRoot)))
+      || fieldValue(Uint8Array.from(statement.nextState)) !== commitment
       || BigInt(statement.now) !== now || BigInt(statement.nextVersion) !== version) fail();
   const policy = statement.policy;
   if (hex(await policyDigest(community, policy)) !== hex(policyHash)
       || fieldValue(await hashes.secretHash(community, ownerSecret)) !== fieldValue(owner.secretHash)) fail();
-  // Enrollment is supplied through the independent verifier boundary. Recheck
-  // paths for the owner and referenced peers against the expected common root.
-  const used = new Set([ownerIndex, ...Array.from(slots.values(), slot => slot.peerIndex)]);
-  for (const index of used) {
-    const entry = checkpoint.entries[index];
-    if (!Array.isArray(entry.path) || entry.path.length !== 32 || entry.leaf !== await hashes.enrollment(community, entry.member, entry)) fail();
-    let leaf = entry.leaf, position = entry.index;
-    for (const sibling of entry.path) {
-      fieldBytes(sibling);
-      leaf = position & 1n ? await hashes.enrollmentNode(sibling, leaf) : await hashes.enrollmentNode(leaf, sibling);
-      position >>= 1n;
-    }
-    if (leaf !== root) fail();
-  }
+  // Current membership is required for the owner. Historical peers may have
+  // left the roster; their saved headers bind to the immutable slot authority.
+  await verifyEnrollmentPath(owner, community, expectedRoot, hashes);
   const payloads = Object.fromEntries(MAPS.map(name => [name, new Map(leaves[name].slice(1).map(leaf => [leaf[0], leaf[1]]))]));
   const pairs = new Set(); let reserved = 0n;
   for (const [key, slot] of slots) {
+    await verifyEnrollmentLeaf(slot.peerEnrollment, community, slot.peer, slot.peerAuthority, hashes);
+    await verifyEnrollmentLeaf(slot.ownerEnrollment, community, owner.member, slot.ownerAuthority, hashes);
     const event = BigInt(key), own = slot.role === 0 ? payloads.outgoing : payloads.incoming,
       opposite = slot.role === 0 ? payloads.incoming : payloads.outgoing;
     if (event !== await hashes.marker(community, ownerSecret, owner.member, slot.peer, slot.nonce)

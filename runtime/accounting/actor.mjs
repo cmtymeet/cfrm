@@ -2,6 +2,7 @@ import { AccountWitness } from './witness.mjs';
 import { AccountClient, accountRequestBytes, verifyAccountAcceptance } from './client.mjs';
 import { copyEnrollmentCheckpoint, enrollmentRoot, verifyEnrollmentPath } from './enrollment.mjs';
 import { STATEMENT_KEYS } from './peer-witness.mjs';
+import { fieldBytes } from './primitives.mjs';
 import { hex, unhex, random, sha } from './encoding.mjs';
 import { scopedAccountSigner } from './actor-signing.mjs';
 import { accountActorStorage } from './actor-storage.mjs';
@@ -188,7 +189,12 @@ export async function createAccountActor(options) {
             || slot.admittedAt !== BigInt(input.openedAt) || slot.expiresAt !== BigInt(input.expiresAt)) {
           throw new Error('Retained account reservation context differs');
         }
-        return { event, phase: slot.phase };
+        // These are retained reservation authorities, not a lookup into the
+        // current enrollment. A renewed roster may change both leaves while
+        // an accepted obligation must continue to bind its original slot.
+        return { event, phase: slot.phase,
+          ownerAuthority: Array.from(fieldBytes(slot.ownerAuthority)),
+          peerAuthority: Array.from(fieldBytes(slot.peerAuthority)) };
       }
       return null;
     },

@@ -26,7 +26,7 @@ struct Job {
     reply: SyncSender<Result<Reply>>,
 }
 enum Command {
-    Begin,
+    Begin(libsql::TransactionBehavior),
     Batch(String),
     Execute(String, Vec<Value>),
     Query(String, Vec<Value>),
@@ -160,8 +160,13 @@ impl Remote {
         }
         result
     }
-    pub(super) fn begin(&self) -> Result<()> {
-        match self.request(Command::Begin)? {
+    pub(super) fn begin(&self, behavior: rusqlite::TransactionBehavior) -> Result<()> {
+        let behavior = match behavior {
+            rusqlite::TransactionBehavior::Deferred => libsql::TransactionBehavior::Deferred,
+            rusqlite::TransactionBehavior::Immediate => libsql::TransactionBehavior::Immediate,
+            _ => return Err(Error::InvalidQuery),
+        };
+        match self.request(Command::Begin(behavior))? {
             Reply::Unit => Ok(()),
             _ => Err(Error::InvalidQuery),
         }
@@ -212,13 +217,13 @@ async fn perform(
 ) -> Result<Reply> {
     let sql_error = |_| Error::InvalidQuery;
     match command {
-        Command::Begin => {
+        Command::Begin(behavior) => {
             if transaction.is_some() {
                 return Err(Error::InvalidQuery);
             }
             *transaction = Some(
                 connection
-                    .transaction_with_behavior(libsql::TransactionBehavior::Immediate)
+                    .transaction_with_behavior(behavior)
                     .await
                     .map_err(sql_error)?,
             );

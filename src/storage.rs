@@ -17,7 +17,9 @@ pub(crate) trait Params {
 
 fn value(input: &dyn ToSql) -> Result<Value> {
     match input.to_sql()? {
-        ToSqlOutput::Borrowed(value) => Ok(value.into()),
+        ToSqlOutput::Borrowed(value) => {
+            Value::column_result(value).map_err(|_| Error::InvalidQuery)
+        }
         ToSqlOutput::Owned(value) => Ok(value),
         _ => Err(Error::InvalidQuery),
     }
@@ -109,6 +111,10 @@ impl Connection {
         }
     }
 
+    pub(crate) fn transaction(&mut self) -> Result<Transaction<'_>> {
+        self.transaction_with_behavior(TransactionBehavior::Deferred)
+    }
+
     pub(crate) fn transaction_with_behavior(
         &mut self,
         behavior: TransactionBehavior,
@@ -119,10 +125,7 @@ impl Connection {
             }
             #[cfg(all(feature = "turso", not(target_arch = "wasm32")))]
             Backend::Remote(connection) => {
-                if !matches!(behavior, TransactionBehavior::Immediate) {
-                    return Err(Error::InvalidQuery);
-                }
-                connection.begin()?;
+                connection.begin(behavior)?;
                 TransactionBackend::Remote(connection)
             }
         };

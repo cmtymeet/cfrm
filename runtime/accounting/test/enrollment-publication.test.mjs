@@ -36,8 +36,15 @@ const verifyDelegation = async () => new Uint8Array(32).fill(0x33);
 test('Node Ed25519 publication signing verifies in WebCrypto and rejects bit flips', async () => {
   assert.equal(await verifyPublicationSignature(publication, operatorPublicKey), true);
   const altered = structuredClone(publication);
-  altered.signature = `${altered.signature.slice(0, -1)}${altered.signature.endsWith('A') ? 'B' : 'A'}`;
+  const bytes = Buffer.from(altered.signature, 'base64url');
+  bytes[0] ^= 1;
+  altered.signature = bytes.toString('base64url');
   assert.equal(await verifyPublicationSignature(altered, operatorPublicKey), false);
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  const noncanonical = { ...publication, signature: publication.signature.slice(0, -1)
+    + alphabet[alphabet.indexOf(publication.signature.at(-1)) | 1] };
+  assert.deepEqual(Buffer.from(noncanonical.signature, 'base64url'), Buffer.from(publication.signature, 'base64url'));
+  assert.equal(await verifyPublicationSignature(noncanonical, operatorPublicKey), false);
 });
 
 test('client rejects wrong scope and stale signed publications', async () => {

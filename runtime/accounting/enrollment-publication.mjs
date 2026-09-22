@@ -107,6 +107,8 @@ export async function verifyPublicationSignature(value, operatorPublicKey) {
   const padded = encoded + '='.repeat((4 - encoded.length % 4) % 4);
   const signatureBytes = Uint8Array.from(atob(padded), character => character.charCodeAt(0));
   if (signatureBytes.length !== 64) throw new TypeError('Invalid enrollment signature');
+  const canonical = btoa(String.fromCharCode(...signatureBytes)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+  if (canonical !== publication.signature) return false;
   const key = await crypto.subtle.importKey('raw', operatorPublicKey, 'Ed25519', false, ['verify']);
   return crypto.subtle.verify('Ed25519', key, signatureBytes, publicationSigningBytes(publication));
 }

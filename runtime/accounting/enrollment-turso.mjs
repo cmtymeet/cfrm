@@ -77,6 +77,7 @@ export async function createTursoEnrollmentStore({ url, authToken, requestTimeou
     ], 'write');
   } catch (error) { client.close(); throw error; }
   return Object.freeze({
+    get healthy() { return !closed; },
     async observeClock(communityId, now) {
       community(communityId);
       if (!positive(now)) throw new TypeError('Invalid enrollment clock');

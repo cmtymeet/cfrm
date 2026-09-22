@@ -1,6 +1,7 @@
 import { fieldBytes, fieldValue } from './primitives.mjs';
 import { cat, be, random, zeros } from './encoding.mjs';
 import { IndexedMap, policyDigest, statePolicyDigest, integer, SAFE, POLICY_KEYS } from './hashes.mjs';
+import { exportWitnessCheckpoint, restoreWitnessCheckpoint } from './checkpoint.mjs';
 
 const POLICY_WIRE = [
   ['initialCredit','initial_credit',32], ['maximumAvailable','maximum_available',32],
@@ -66,9 +67,37 @@ export function statementBytes(statement) {
     ...POLICY_WIRE.map(([key, , bits]) => be(p[key], bits / 8)));
 }
 
+export async function validateStatement(statement) {
+  const keys = ['protocolVersion','community','owner','policyDigest','enrollmentRoot','now','validUntil','genesis',
+    'previousVersion','nextVersion','previousState','nextState','settlementMarker','policy'];
+  const exact = (value, names) => value && !Array.isArray(value) && Object.keys(value).length === names.length
+    && names.every(key => Object.hasOwn(value, key));
+  const equal = (a, b) => a.length === b.length && a.every((value, index) => value === b[index]);
+  if (!exact(statement, keys) || !exact(statement.policy, POLICY_KEYS)) throw new Error('Exact account statement required');
+  const inputs = publicInputValues(statement), s = statement;
+  if (inputs.length !== PUBLIC_INPUT_COUNT || BigInt(s.validUntil) !== validityHorizon(s.now, s.policy)
+      || s.now <= 0 || s.now < s.policy.policyValidFrom || s.now >= s.policy.policyValidUntil
+      || !equal(s.policyDigest, await policyDigest(Uint8Array.from(s.community), s.policy))) throw new Error('Account policy/time encoding');
+  for (const key of ['enrollmentRoot','previousState','nextState','settlementMarker']) fieldValue(Uint8Array.from(s[key]));
+  if (!s.enrollmentRoot.some(Boolean) || !s.nextState.some(Boolean)
+      || (s.genesis ? s.previousVersion !== 0 || s.nextVersion !== 0 || s.previousState.some(Boolean) || s.settlementMarker.some(Boolean)
+        : s.nextVersion !== s.previousVersion + 1 || !s.previousState.some(Boolean))) throw new Error('Account state/version shape');
+  return inputs;
+}
+
 // Local witness state. It is never accepted by an operator without a real proof
 // plus a durable accepted-state comparison. Returned candidates do not mutate it.
 export class AccountWitness {
+  /** Private UTF-8 JSON bytes for the member's encrypted wallet, never a server. */
+  exportCheckpoint(limits) { return exportWitnessCheckpoint(this, limits); }
+
+  /** The embedding independently authenticates expectedStatement and enrollment. */
+  static async restoreCheckpoint(options) {
+    const value = Object.assign(new AccountWitness(), await restoreWitnessCheckpoint(options, validateStatement));
+    value.at(value.now);
+    return value;
+  }
+
   static async genesis({ hashes, community, policy, checkpoint, ownerIndex, ownerSecret, now }) {
     const value = new AccountWitness();
     Object.assign(value, { hashes, community, policy, checkpoint, ownerIndex, ownerSecret, now: BigInt(now), version: 0n });

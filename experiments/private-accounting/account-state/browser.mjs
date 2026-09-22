@@ -187,12 +187,21 @@ export async function runAccountState({ api, circuit, manifest, verificationKey,
   await mutate(outgoing, 'insertion rejects zero-key sentinel reuse', input => { input.own_map.leaf[0] = 1n; });
   await mutate(outgoing, 'enrollment rejects a noncanonical secret encoding', input => { input.owner_enrollment.secret_hash = be(FR_MODULUS, 32); });
   sender = await prove(outgoing, 0, 'proved outgoing reservation');
+  const checkpointLimits = { maxBytes: 65536, maxMapEntries: 64, maxSlots: 32 };
+  const walletCheckpoint = sender.exportCheckpoint(checkpointLimits);
+  sender = await AccountWitness.restoreCheckpoint({ checkpointBytes: walletCheckpoint, hashes: accountHashes(api),
+    enrollment: checkpoint, ownerSecret: holders[0].secret, expectedStatement: outgoing.statement, limits: checkpointLimits });
+  assert(equal(fieldBytes(sender.commitment), outgoing.statement.nextState),
+    'private wallet checkpoint restores the exact real ledger-accepted reservation with production hashes');
+  metrics.checkpointRecovery = { version: 1, storedBytes: walletCheckpoint.length,
+    acceptedNextVersion: outgoing.statement.nextVersion, followingActivationProved: false, privateCheckpointExported: false };
   const activeSender = await sender.activate(outgoing.event, 100);
   await mutate(activeSender, 'activation cannot replace an obligation peer', input => { input.slot.peer = input.owner; });
   await mutate(activeSender, 'activation cannot change its original group', input => { input.slot.group[0] ^= 1; });
   await mutate(activeSender, 'payload update cannot alter linked pointers', input => { input.own_map.leaf[3] = 1n; });
   await mutate(activeSender, 'unknown action cannot refund a sender reservation', input => { input.action = 7; });
   sender = await prove(activeSender, 0, 'proved sender activation');
+  metrics.checkpointRecovery.followingActivationProved = true;
   const outgoingPresentation = await present(sender, outgoing.event, gate.value.outgoing, 'original initiator');
   assert((await post({ command: 'authorizeIncoming', outgoingPresentation })).ok,
     'native cmsg independently verifies real Active outgoing proof before explicit incoming consent');

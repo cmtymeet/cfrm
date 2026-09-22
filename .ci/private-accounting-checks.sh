@@ -30,6 +30,9 @@ case "${CHECK_PHASE:-full}" in
     [[ "${BROWSER_BUNDLE_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || exit 2
     artifact_dir="$artifact_dir-startup"
     ;;
+  startup-build)
+    artifact_dir="$artifact_dir-startup-build"
+    ;;
   compile)
     test "$ACCOUNTING_MODE" = account-state-v2
     artifact_dir="$artifact_dir-compile"
@@ -65,6 +68,7 @@ capture() {
   test ! -f setup-lock.json || cp setup-lock.json "$artifact_dir/setup-lock.json"
   test ! -f account-state/setup-lock.json || cp account-state/setup-lock.json "$artifact_dir/account-state-setup-lock.json"
   test ! -f ../../Cargo.lock || cp ../../Cargo.lock "$artifact_dir/cfrm-Cargo.lock"
+  test ! -f ../../runtime/accounting/package-lock.json || cp ../../runtime/accounting/package-lock.json "$artifact_dir/runtime-package-lock.json"
   for name in manifest.json circuit.json circuit-stats.json; do
     test ! -f "public/$name" || cp "public/$name" "$artifact_dir/$name"
   done
@@ -121,6 +125,19 @@ test "$(uname -s)" = Linux
 test "$(uname -m)" = x86_64
 timeout 600 npm ci --libc=glibc --ignore-scripts --no-audit --no-fund \
   2>&1 | tee "$artifact_dir/npm-install.log"
+if test "${CHECK_PHASE:-full}" = startup-build; then
+  # Bundle current imports without compiling circuits or initializing proof setup.
+  export BROWSER_BUILD_DIR="$artifact_dir/browser-bundle"
+  export NAPI_RS_NATIVE_LIBRARY_PATH="$PWD/node_modules/@rolldown/binding-linux-x64-gnu"
+  timeout 300 node --input-type=module <<'JS' 2>&1 | tee "$artifact_dir/browser-build.log"
+const { build } = await import('vite');
+await build({ publicDir: false, build: { outDir: process.env.BROWSER_BUILD_DIR } });
+JS
+  export BROWSER_CHECK_PHASE=startup BROWSER_BUNDLE_SHA="$CI_COMMIT_SHA"
+  export BROWSER_DIST="$BROWSER_BUILD_DIR" BROWSER_EVIDENCE="$artifact_dir/browser-evidence.json"
+  timeout --kill-after=15 120 node browser-check.mjs 2>&1 | tee "$artifact_dir/browser-startup.log"
+  exit 0
+fi
 if test "${CHECK_PHASE:-full}" = compile; then
   export ACCOUNTING_ARTIFACT_DIR="$artifact_dir"
   if test "$CIRCUIT_PACKAGE" = peer-reservation; then

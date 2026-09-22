@@ -43,6 +43,41 @@ is required, and terminate that Worker on cancellation. `destroy` releases the
 backend after the current operation. It intentionally does not pretend an
 abandoned Promise interrupts cryptographic work.
 
+Persist an account witness with `witness.exportCheckpoint(checkpointLimits)`.
+It returns UTF-8 JSON bytes containing private openings, map leaves and slots;
+encrypt these bytes in the member wallet before storage. The exact resource
+limits are required: `{ maxBytes, maxMapEntries, maxSlots }`, with positive
+integers bounded respectively by 16 MiB, 65,536 entries per map (including its
+sentinel), and 65,535 slots. These are parser/work bounds, not community policy.
+The checkpoint excludes the owner secret, runtime functions and proof artifacts.
+Preserve the owner secret separately in the same private wallet boundary.
+
+```js
+const restored = await AccountWitness.restoreCheckpoint({
+  checkpointBytes,          // decrypted local-wallet bytes
+  hashes: runtime.hashes,   // the trusted pinned runtime
+  enrollment,              // independently verified checkpointFromVerified result
+  ownerSecret,             // private wallet bytes; never server input
+  expectedStatement,       // independently verified acceptance's statement
+  limits: checkpointLimits,
+});
+```
+
+Restoration validates the exact versioned schema and bounds, reconstructs ordered
+maps at their original leaf positions, checks enrollment paths, recomputes slot
+markers/payloads and the account commitment, and binds the result to the expected
+owner, community, policy, enrollment root, version and time. The supplied
+enrollment must match the expected statement's root. No new genesis, state reset
+or roster replacement occurs. A serialized checkpoint cannot authenticate its
+own expected statement: verify the operator signature and use fresh authenticated
+status to resolve uncertain acceptance/current-state questions. During a pending
+write, its durable exact signed request supplies the successor's expected
+statement; that reconstruction alone does not authorize installing the successor.
+Keep both the old and pending successor checkpoints until acceptance is verified
+and committed atomically. The library does not provide wallet encryption,
+cross-device synchronization, rollback protection or atomic compare-and-swap.
+Hashing remains serialized through the application-owned runtime/Worker.
+
 `AccountClient` receives `transport(envelope)`, `sign(bytes)` and the pinned
 operator public key. `prepareApply` converts a public proof record to the exact
 device-signed Rust request. **Persist that request together with the old and
